@@ -1,0 +1,51 @@
+bundle:
+  name: contraloria-audit-agent
+
+# ============================================================================
+# EDITAR ANTES DE DESPLEGAR (marcado con  <-- EDITAR):
+#   - targets.dev.workspace.host  (URL de tu workspace)
+#   - variables.catalog / schema  (donde viven los datos)
+#   - variables.warehouse_id      (tu SQL warehouse serverless)
+# El resto puede quedar por defecto. Los LLMs se AUTODETECTAN en el despliegue.
+# ============================================================================
+
+variables:
+  catalog:
+    description: Unity Catalog donde viven los datos de la Contraloria
+    default: dacamargovws_catalog        # <-- EDITAR
+  schema:
+    description: Schema con los volumenes e insumos de auditoria
+    default: contraloria                 # <-- EDITAR (opcional)
+  volume_informes:
+    description: Volumen con los PDFs de informes de auditoria (insumo)
+    default: informes
+  volume_analiticos:
+    description: Volumen donde se guardan los informes analiticos generados
+    default: informes-analiticos
+  vs_endpoint:
+    description: Nombre del endpoint de Vector Search
+    default: contraloria_vs
+  embedding_endpoint:
+    description: Foundation model para embeddings
+    default: databricks-gte-large-en
+  llm_endpoint:
+    description: Foundation model para el agente y la generacion de informes
+    default: databricks-claude-opus-4-7
+  warehouse_id:
+    description: SQL Warehouse serverless
+    default: 61200af9c31dec2e            # <-- EDITAR
+  agent_endpoint:
+    description: Nombre del endpoint de serving del agente
+    default: contraloria_audit_agent
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://fevm-dacamargovws.cloud.databricks.com   # <-- EDITAR
+    resources:
+      # Los recursos (jobs, app) se cargan desde resources/*.yml
+
+include:
+  - resources/*.yml

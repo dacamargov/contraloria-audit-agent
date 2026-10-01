@@ -1,0 +1,4 @@
+databricks-sdk>=0.30
+requests>=2.31,<3
+markdown2>=2.4,<3
+xhtml2pdf>=0.2.11,<0.3

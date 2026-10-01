@@ -1,0 +1,31 @@
+command:
+  - "streamlit"
+  - "run"
+  - "app.py"
+  - "--server.port"
+  - "8000"
+  - "--server.address"
+  - "0.0.0.0"
+  - "--server.headless"
+  - "true"
+
+env:
+  - name: AGENT_ENDPOINT
+    value: contraloria_audit_agent
+  - name: DEFAULT_LLM
+    value: databricks-claude-opus-4-7
+  - name: CONTRALORIA_CATALOG
+    value: dacamargovws_catalog
+  - name: CONTRALORIA_SCHEMA
+    value: contraloria
+  - name: VOL_INFORMES
+    value: informes
+  - name: VOL_ANALITICOS
+    value: informes-analiticos
+  # ID exacto del job de informes, inyectado desde el recurso 'report_job' del bundle
+  # (robusto y sin depender de coincidencia de nombre en el workspace).
+  - name: REPORT_JOB_ID
+    valueFrom: report_job
+  # Fallback por nombre si 'REPORT_JOB_ID' no estuviera disponible.
+  - name: REPORT_JOB_NAME_CONTAINS
+    value: "generate_report"

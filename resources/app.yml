@@ -1,0 +1,22 @@
+resources:
+  apps:
+    contraloria_app:
+      name: contraloria-audit-agent
+      description: "Asistente de auditoria: chat con citas + generacion de informes analiticos"
+      source_code_path: ../app
+      resources:
+        - name: agent
+          description: Endpoint de serving del agente (chat)
+          serving_endpoint:
+            name: ${var.agent_endpoint}
+            permission: CAN_QUERY
+        - name: report_job
+          description: Job que genera el informe analitico en PDF
+          job:
+            id: ${resources.jobs.generate_report.id}
+            permission: CAN_MANAGE_RUN
+        - name: warehouse
+          description: SQL Warehouse serverless
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE

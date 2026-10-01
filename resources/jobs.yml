@@ -1,0 +1,62 @@
+resources:
+  jobs:
+
+    # Bootstrap (una vez): sectorizacion + tabla de chunks + Vector Search.
+    setup:
+      name: "[contraloria] setup"
+      tasks:
+        - task_key: setup
+          notebook_task:
+            notebook_path: ../src/setup.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              vs_endpoint: ${var.vs_endpoint}
+              embedding_endpoint: ${var.embedding_endpoint}
+
+    # Ingesta dinamica: se dispara al llegar un PDF nuevo al Volume.
+    ingest:
+      name: "[contraloria] ingest"
+      trigger:
+        file_arrival:
+          url: /Volumes/${var.catalog}/${var.schema}/${var.volume_informes}/
+      tasks:
+        - task_key: ingest
+          notebook_task:
+            notebook_path: ../src/ingest.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              volume_informes: ${var.volume_informes}
+
+    # Deploy del agente (una vez, tras la primera ingesta).
+    deploy_agent:
+      name: "[contraloria] deploy_agent"
+      tasks:
+        - task_key: deploy_agent
+          notebook_task:
+            notebook_path: ../src/deploy_agent.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              llm_endpoint: ${var.llm_endpoint}
+              embedding_endpoint: ${var.embedding_endpoint}
+              agent_endpoint: ${var.agent_endpoint}
+
+    # Generacion del informe analitico (lo dispara la app con parametros).
+    generate_report:
+      name: "[contraloria] generate_report"
+      tasks:
+        - task_key: generate_report
+          notebook_task:
+            notebook_path: ../src/generate_report.py
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
+              volume_analiticos: ${var.volume_analiticos}
+              vs_endpoint: ${var.vs_endpoint}
+              llm_endpoint: ${var.llm_endpoint}
+              sector: "Medio Ambiente"
+              sujetos: "CAR,CVC,PNNC,ANLA,FONDO_VIDA"
+              periodo: "2025-2026"
+              tema: ""

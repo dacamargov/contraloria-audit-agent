@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Databricks Asset Bundles (estado local de despliegue)
+.databricks/
+.databricks-login.json
+
+# Sistema
+.DS_Store

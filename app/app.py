@@ -10,12 +10,17 @@ import os
 import io
 import json
 import time
+import queue
 import base64
+import threading
 import requests
 import streamlit as st
 import markdown2
 from xhtml2pdf import pisa
 from databricks.sdk import WorkspaceClient
+
+# Sentinela: marca el fin del stream en el worker en segundo plano (pagina Chat).
+_STREAM_DONE = object()
 
 
 @st.cache_data(show_spinner=False)
@@ -293,17 +298,17 @@ def _md(text):
 
 
 if PAGE == "chat":
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    ss = st.session_state
+    ss.setdefault("messages", [])
+    ss.setdefault("generating", False)   # hay una consulta en curso
+    ss.setdefault("partial", "")         # texto recibido hasta ahora (para conservarlo al detener)
+    ss.setdefault("stop", False)         # el usuario pidio detener
 
-    if st.button("🆕 Nueva conversacion"):
-        st.session_state.messages = []
-        st.rerun()
-
-    for i, m in enumerate(st.session_state.messages):
+    # --- Historial ---
+    for i, m in enumerate(ss.messages):
         with st.chat_message(m["role"]):
             st.markdown(_md(m["content"]))
-            if m["role"] == "assistant":
+            if m["role"] == "assistant" and m["content"]:
                 st.download_button(
                     "⬇️ Descargar respuesta (PDF)",
                     data=answer_to_pdf(m["content"]),
@@ -312,39 +317,94 @@ if PAGE == "chat":
                     key=f"dl_{i}",
                 )
 
-    if prompt := st.chat_input("Escribe tu pregunta o pide un informe (ej: 'informe de la CVC 2024 y 2025')..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    # --- Consulta en curso: boton DETENER + streaming interrumpible ---
+    if ss.generating:
+        if st.button("⏸️  Detener consulta", key="stop_btn", type="secondary"):
+            ss.stop = True  # el click re-ejecuta el script; se maneja abajo
+
         with st.chat_message("assistant"):
-            status = st.empty()
-            status.markdown("🔎 &nbsp;*Consultando informes...*")
-            _started = {"v": False}
-            _raw = []
+            ph = st.empty()
 
-            def _gen():
-                for delta in stream_agent(st.session_state.messages, SELECTED_LLM):
-                    if not _started["v"]:      # al llegar el primer token, quita el indicador
-                        status.empty()
-                        _started["v"] = True
-                    _raw.append(delta)
-                    yield _md(delta)           # escapa '$' para el render en vivo
+            if ss.stop:
+                # El usuario detuvo: conserva lo recibido, libera el chat y avisa al worker.
+                ev = ss.pop("_cancel_event", None)
+                if ev:
+                    ev.set()
+                txt = ss.partial
+                ph.markdown(_md(txt) if txt else "_Consulta detenida._")
+                ss.messages.append({"role": "assistant",
+                                    "content": txt or "(Consulta detenida por el usuario.)"})
+                ss.generating, ss.stop, ss.partial = False, False, ""
+                st.rerun()
+            else:
+                # La consulta corre en un hilo para poder interrumpirla AUN mientras el
+                # agente "piensa" (consulta herramientas en el servidor, sin enviar datos).
+                q = queue.Queue()
+                ev = threading.Event()
+                ss["_cancel_event"] = ev
+                _msgs, _llm = list(ss.messages), SELECTED_LLM
 
-            try:
-                st.write_stream(_gen())
-                answer = "".join(_raw)         # se guarda el texto crudo (con '$')
-            except Exception:
-                answer = ""
-            status.empty()
-            if not answer:  # fallback si el streaming no esta disponible
-                with st.spinner("🔎 Consultando informes..."):
+                def _worker(msgs=_msgs, llm=_llm, q=q, ev=ev):
                     try:
-                        answer = query_agent(st.session_state.messages, SELECTED_LLM)
+                        for delta in stream_agent(msgs, llm):
+                            if ev.is_set():
+                                break
+                            q.put(("delta", delta))
                     except Exception as e:
-                        answer = f"Error al consultar el agente: {e}"
-                st.markdown(_md(answer))
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.rerun()  # re-renderiza para mostrar el boton de descarga y dejar el chat listo para continuar
+                        q.put(("error", str(e)))
+                    finally:
+                        q.put(_STREAM_DONE)
+
+                threading.Thread(target=_worker, daemon=True).start()
+                ss.partial = ""
+                err = None
+                ph.markdown("🔎 &nbsp;*Consultando informes...*")
+                while True:
+                    try:
+                        item = q.get(timeout=0.25)
+                    except queue.Empty:
+                        # Heartbeat: cada 0.25s se escribe en pantalla, lo que permite que
+                        # el click en "Detener" interrumpa el script aunque no lleguen datos.
+                        ph.markdown((_md(ss.partial) + " ▌") if ss.partial
+                                    else "🔎 &nbsp;*Consultando informes...* ▌")
+                        continue
+                    if item is _STREAM_DONE:
+                        break
+                    kind, val = item
+                    if kind == "error":
+                        err = val
+                        break
+                    ss.partial += val
+                    ph.markdown(_md(ss.partial) + " ▌")
+
+                answer = ss.partial
+                if not answer:  # sin texto en streaming: error o fallback sin stream
+                    if err:
+                        answer = f"Error al consultar el agente: {err}"
+                    else:
+                        try:
+                            answer = query_agent(list(ss.messages), SELECTED_LLM)
+                        except Exception as e:
+                            answer = f"Error al consultar el agente: {e}"
+                ph.markdown(_md(answer))
+                ss.messages.append({"role": "assistant", "content": answer})
+                ss.generating, ss.partial = False, ""
+                ss.pop("_cancel_event", None)
+                st.rerun()
+
+    # --- Nueva conversacion ABAJO (no hay que subir hasta arriba) ---
+    if ss.messages and not ss.generating:
+        if st.button("🆕  Nueva conversacion", key="new_chat"):
+            ss.messages = []
+            st.rerun()
+
+    # --- Entrada (Streamlit la fija abajo); deshabilitada mientras hay una consulta ---
+    if prompt := st.chat_input(
+            "Escribe tu pregunta o pide un informe (ej: 'informe de la CVC 2024 y 2025')...",
+            disabled=ss.generating):
+        ss.messages.append({"role": "user", "content": prompt})
+        ss.generating, ss.stop, ss.partial = True, False, ""
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #

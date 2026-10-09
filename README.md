@@ -130,73 +130,98 @@ y en `app/app.py`) y vuelve a correr `deploy.sh` (o `deploy_agent` + republicar 
     --json '{"input":[{"role":"user","content":"Que hallazgos fiscales tiene la CVC y sus cuantias?"}]}'
   ```
 
-## Gobernanza con Mosaic AI Gateway (opt-in)
+## Gobernanza con Unity Gateway (model services)
 
-Por defecto el agente llama a los **foundation models de sistema** (`databricks-claude-*`), que
-son gestionados por Databricks y no se pueden gobernar a nivel de usuario. Para aplicar
-**gobernanza completa** sobre las llamadas al LLM —**usage tracking**, **rate limiting** global
-por endpoint, **guardrails** (deteccion de PII + safety en entrada y salida) y **fallbacks**— se
-usa un **endpoint External Model propio** gobernado por Mosaic AI Gateway, y se **enruta el
-agente por el**.
+Por defecto el agente llama a los **foundation models de sistema** (`databricks-claude-*`). Para
+**gobernar** las llamadas al LLM —**usage tracking**, **rate limiting**, **guardrails** (PII +
+safety) e **inference tables**, con **fallbacks** entre proveedores— se usan **model services de
+Unity Gateway**: objetos de Unity Catalog con nombre de 3 niveles (`catalog.schema.name`) donde la
+gobernanza se configura **en la UI de Unity Gateway**. El agente y la app se enrutan por ellos.
 
 > **Por que no en el endpoint del agente:** el endpoint tipo `agent/v1/responses` solo soporta
-> *inference tables* (ya activas). Rate limits, usage tracking y guardrails solo existen en la
-> **capa de chat** (`llm/v1/chat`), de ahi el endpoint External Model dedicado.
+> *inference tables*. El resto de la gobernanza vive en la capa de chat; los model services la
+> aplican de forma centralizada en Unity Catalog y se invocan por el **AI Gateway**
+> (`/ai-gateway/mlflow/v1`, API OpenAI-compatible, `model = <nombre UC de 3 niveles>`).
 
-Se puede ofrecer **uno o varios** modelos: creas **un endpoint gobernado por cada LLM** que
-quieras usar y los listas en `governed_llm_endpoints`. La app ofrece exactamente esos (el primero
-es el default) y el agente los usa como **allowlist** (`CONTRALORIA_ALLOWED_LLMS`): si la app pide
-un modelo fuera de la lista, cae al gobernado por defecto, de modo que **ningun trafico escapa**.
+**Como activarlo:**
 
-**Opcion 1 — crear los endpoints tu mismo** (UI de Serving o CLI/REST), luego:
-```yaml
-# databricks.yml
-governed_llm_endpoints: "gov-claude-opus, gov-gpt-sol"   # nombres de tus endpoints gobernados
-```
-```bash
-./deploy.sh <perfil-cli>    # el agente y la app pasan a usar esos endpoints
-```
-
-**Opcion 2 — crear con el helper incluido** (`setup_ai_gateway`), uno por modelo:
-
-1. Guarda la API key del proveedor como **secreto** (una vez):
-   ```bash
-   databricks secrets create-scope contraloria
-   databricks secrets put-secret contraloria anthropic_api_key   # pega la API key
-   # opcional, para fallback:  databricks secrets put-secret contraloria openai_api_key
-   ```
-2. En `databricks.yml` define el endpoint a crear y su proveedor/modelo:
+1. Crea **un model service por cada LLM** que quieras ofrecer, en la UI de Unity Gateway
+   (`.../ml/ai-gateway` → Models). Ahi defines destino(s), guardrails, rate limits, usage e
+   inference tables. Ejemplo (los de esta solucion):
+   - `dacamargovws_catalog.contraloria.contraloria_auditoria_opus5`  (Claude Opus 5)
+   - `dacamargovws_catalog.contraloria.contraloria_auditoria_genimi_flash`  (Gemini Flash)
+2. Listalos en `databricks.yml` (nombres UC completos, separados por coma):
    ```yaml
-   create_llm_endpoint: gov-claude-opus         # nombre del endpoint gobernado a crear
-   ext_provider: anthropic                      # anthropic | openai | cohere
-   ext_model: claude-opus-4-20250514            # id del modelo del proveedor
-   # opcional (fallback):  ext_fallback_provider: openai   ext_fallback_model: gpt-4o
-   # opcional:  rate_limit_calls: "120"  (llamadas/min, global)   pii_behavior: BLOCK
+   governed_llm_endpoints: "catalog.schema.servicio_a, catalog.schema.servicio_b"
    ```
-   Corre el job (o `./deploy.sh`, que lo ejecuta si `create_llm_endpoint` esta definido):
+3. Vuelve a desplegar:
    ```bash
-   databricks bundle run setup_ai_gateway -t dev -p <perfil-cli>
+   ./deploy.sh <perfil-cli>
    ```
-   Repite cambiando `create_llm_endpoint`/`ext_model` por cada modelo.
-3. Agrega los nombres creados a `governed_llm_endpoints` y vuelve a desplegar (Opcion 1).
 
-El endpoint gobernado se crea con **todo el AI Gateway**: usage tracking, inference tables, rate
-limit global, guardrails (PII `BLOCK` + safety) y fallbacks (si configuras un proveedor
-secundario). `deploy_agent` enruta el agente por estos endpoints y aplica la allowlist.
+Con esto: la app ofrece **solo** estos modelos (el primero es el default); el agente los usa como
+**allowlist** (`CONTRALORIA_ALLOWED_LLMS`) —si la app pide otro, cae al gobernado por defecto, asi
+**ningun trafico escapa** a la gobernanza. `deploy_agent` detecta los nombres de 3 niveles y los
+declara como recursos **UC Model Service** (`DatabricksUCModelService`).
 
-**Mientras `governed_llm_endpoints` este vacio, todo sigue igual** (one-click con los FM de
-sistema); el job `setup_ai_gateway` es seguro de correr: si `create_llm_endpoint` esta vacio o
-falta el secreto, termina sin cambios.
+**Autenticacion al gateway (importante).** Un agente desplegado llama a sus LLM con un **token
+*downscoped*** (auth automatica del SP del agente, o incluso OBO). Ese token **no resuelve los model
+services del Unity Gateway** (`/ai-gateway/mlflow/v1` responde `404 ... does not exist`), aunque el
+SP tenga `EXECUTE`. Por eso el agente usa un **Service Principal dedicado via M2M OAuth**, que
+produce un **token de identidad completa** (no *downscoped*) y el gateway si resuelve:
 
-> **Nota de este entorno (FE sandbox):** aqui no se pudo validar en vivo porque (a) el endpoint
-> del agente no soporta estas funciones por tipo y (b) no se tienen permisos de admin sobre los
-> FM de sistema para gobernarlos. La configuracion queda **versionada y lista** para la cuenta
-> del cliente, donde se habilita con los pasos de arriba.
+1. Crea un SP y dale `EXECUTE` (+ `USE CATALOG`/`USE SCHEMA`) sobre cada model service:
+   ```bash
+   databricks service-principals create --display-name contraloria-gw-sp     # -> id, applicationId
+   databricks grants update catalog <catalog> --json '{"changes":[{"principal":"<applicationId>","add":["USE_CATALOG"]}]}'
+   databricks grants update schema  <catalog>.<schema> --json '{"changes":[{"principal":"<applicationId>","add":["USE_SCHEMA"]}]}'
+   databricks api patch /api/2.1/unity-catalog/permissions/model_service/<catalog>.<schema>.<servicio> \
+     --json '{"changes":[{"principal":"<applicationId>","add":["EXECUTE"]}]}'
+   ```
+2. Crea un **secret OAuth** del SP y guardalo en un **secret scope** de Databricks:
+   ```bash
+   databricks service-principal-secrets-proxy create <sp_id>                  # -> secret (una sola vez)
+   databricks secrets create-scope contraloria
+   databricks secrets put-secret contraloria gw_sp_client_id --string-value <applicationId>
+   databricks secrets put-secret contraloria gw_sp_secret    --string-value <secret>
+   ```
+   (El creador del endpoint del agente debe tener `READ` sobre el scope; Model Serving sustituye
+   `{{secrets/scope/key}}` en tiempo de ejecucion.)
+3. `deploy_agent` inyecta estas credenciales como env vars (`CONTRALORIA_GW_CLIENT_ID` /
+   `CONTRALORIA_GW_CLIENT_SECRET`, por defecto desde el scope `contraloria`) y la URL publica del
+   workspace (`CONTRALORIA_WORKSPACE_HOST`). El agente construye
+   `WorkspaceClient(host=<publico>, client_id=..., client_secret=...)` y lo pasa a
+   `ChatDatabricks(model=<nombre UC>, use_ai_gateway=True, workspace_client=...)`.
+
+> El scope/llaves del secret son configurables con los widgets `gw_secret_scope`,
+> `gw_client_id_key`, `gw_client_secret_key` del job `deploy_agent` (defaults: `contraloria`,
+> `gw_sp_client_id`, `gw_sp_secret`).
+
+- `deploy_agent` **fija `databricks-openai`** en los `pip_requirements` para asegurar ruteo al
+  gateway (`/ai-gateway/mlflow/v1`) en el entorno servido.
+- La generacion de informes (`generate_report.py`) tambien enruta por el gateway cuando el modelo
+  es un nombre de 3 niveles; corre bajo la identidad del job (`run_as`), que debe tener `EXECUTE`
+  sobre los model services.
+
+**Mientras `governed_llm_endpoints` este vacio, todo sigue igual** (one-click con los FM de sistema).
+
+<details><summary>Alternativa legacy: endpoint External Model propio</summary>
+
+Si tu workspace no usa Unity Gateway model services, puedes crear un endpoint **External Model**
+clasico gobernado por Mosaic AI Gateway con el helper `setup_ai_gateway`:
+
+1. Guarda la API key del proveedor como secreto: `databricks secrets put-secret contraloria anthropic_api_key`.
+2. En `databricks.yml`: `create_llm_endpoint: gov-claude-opus`, `ext_provider`, `ext_model`
+   (opcional fallback + `rate_limit_calls` + `pii_behavior`).
+3. `databricks bundle run setup_ai_gateway -t dev -p <perfil>` (uno por modelo), luego agrega los
+   nombres a `governed_llm_endpoints` (nombres planos, sin puntos) y redesplega.
+</details>
 
 ## Notas
 
-- Embeddings: `databricks-gte-large-en`. LLM por defecto: `databricks-claude-opus-4-7`
-  (configurable en `databricks.yml`); los modelos de chat se autodetectan (ver arriba).
+- Embeddings: `databricks-gte-large-en`. Si `governed_llm_endpoints` esta definido, el agente y la
+  app usan esos **model services de Unity Gateway** (el primero es el default). Si esta vacio, el
+  LLM por defecto es `databricks-claude-opus-4-7` (configurable) y los modelos de chat se autodetectan.
 - El indice es Delta Sync: los PDFs nuevos quedan disponibles sin reindexar a mano.
 - Los prompts (agente e informe) exigen citar la fuente y separar comprobado vs. a verificar.
 - **Deduplicacion por contenido**: la ingesta calcula un hash MD5 del PDF; si sube el **mismo

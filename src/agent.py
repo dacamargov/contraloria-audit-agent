@@ -32,6 +32,17 @@ MAX_ITERS = int(os.environ.get("CONTRALORIA_MAX_ITERS", "14"))
 # Vacio = sin restriccion (se honra cualquier modelo que elija la app, modo FM de sistema).
 ALLOWED_LLMS = {s.strip() for s in os.environ.get("CONTRALORIA_ALLOWED_LLMS", "").split(",") if s.strip()}
 
+_UNSET = object()  # centinela para cache perezoso del WorkspaceClient del gateway
+# URL publica del workspace, inyectada en el deploy. Necesaria para enrutar el AI Gateway
+# con el host publico (no el host interno de serving).
+WORKSPACE_HOST = (os.environ.get("CONTRALORIA_WORKSPACE_HOST", "").strip() or None)
+# Credenciales M2M OAuth de un SP dedicado (inyectadas via secret de Databricks). El agente usa
+# este SP para llamar a los MODEL SERVICES del Unity Gateway: produce un token de identidad
+# COMPLETA (no downscoped) con EXECUTE sobre los model services, que el gateway SI resuelve.
+# (El token nativo del agente -auto-auth u OBO- es downscoped y da 404 en model services.)
+GW_CLIENT_ID = (os.environ.get("CONTRALORIA_GW_CLIENT_ID", "").strip() or None)
+GW_CLIENT_SECRET = (os.environ.get("CONTRALORIA_GW_CLIENT_SECRET", "").strip() or None)
+
 SYSTEM_PROMPT = """Eres el asistente analitico de la Contraloria General de la Republica para la
 planeacion y focalizacion de auditorias. Conversas en lenguaje natural con el equipo auditor; el
 usuario NO tiene que usar frases ni palabras clave especificas.
@@ -95,6 +106,10 @@ def _clean_text(content):
     modelos con 'thinking' (Claude), que a veces llegan como dict o como JSON serializado."""
     if not content:
         return ""
+    if isinstance(content, dict):
+        if content.get("type") in _REASONING_TYPES:
+            return ""
+        return content.get("text", "") or ""
     if isinstance(content, list):
         out = []
         for p in content:
@@ -107,12 +122,16 @@ def _clean_text(content):
         return "".join(out)
     if isinstance(content, str):
         s = content.strip()
+        # Algunos modelos (p.ej. Gemini) devuelven el contenido como un JSON serializado con la
+        # lista de partes [{"type":"text","text":...,"thoughtSignature":...}]. Lo parseamos y
+        # aplanamos recursivamente para quedarnos solo con el texto (y descartar razonamiento).
         if s.startswith("[") or s.startswith("{"):
             try:
-                if _is_reasoning(json.loads(s)):
-                    return ""
+                parsed = json.loads(s)
             except Exception:
-                pass
+                parsed = None
+            if parsed is not None and not isinstance(parsed, str):
+                return _clean_text(parsed)
         return content
     return ""
 
@@ -139,13 +158,60 @@ class ContraloriaAgent(ResponsesAgent):
         self.tools = _tools()
         self.tools_by_name = {t.name: t for t in self.tools}
         self._llm_cache = {}
+        self._gw_wc_cache = _UNSET  # WorkspaceClient del SP del gateway (M2M OAuth), lazy
+
+    def _gw_wc(self):
+        # WorkspaceClient para llamar los MODEL SERVICES del Unity Gateway. Usa un SP dedicado
+        # via M2M OAuth (client_id/secret inyectados por secret) -> token de identidad COMPLETA
+        # con EXECUTE sobre los model services, que el gateway resuelve correctamente. El host se
+        # fija EXPLICITAMENTE a la URL PUBLICA del workspace (no el host interno de serving), para
+        # que el base_url del gateway sea {host_publico}/ai-gateway/mlflow/v1.
+        if self._gw_wc_cache is not _UNSET:
+            return self._gw_wc_cache
+        wc = None
+        try:
+            from databricks.sdk import WorkspaceClient
+            if GW_CLIENT_ID and GW_CLIENT_SECRET and WORKSPACE_HOST:
+                wc = WorkspaceClient(host=WORKSPACE_HOST, client_id=GW_CLIENT_ID,
+                                     client_secret=GW_CLIENT_SECRET)
+            else:
+                # Fallback (no recomendado): credenciales del invocador (OBO). El token del agente
+                # es downscoped y NO resuelve model services del gateway -> dejar configurado el SP.
+                from databricks.sdk.credentials_provider import ModelServingUserCredentials
+                kw = {"credentials_strategy": ModelServingUserCredentials()}
+                if WORKSPACE_HOST:
+                    kw["host"] = WORKSPACE_HOST
+                wc = WorkspaceClient(**kw)
+        except Exception:
+            wc = None
+        # Solo cacheamos un cliente valido (con SP, la construccion no depende del invocador y no
+        # falla en el warmup; con el fallback OBO puede fallar sin invocador -> reintentar).
+        if wc is not None and (GW_CLIENT_ID and GW_CLIENT_SECRET):
+            self._gw_wc_cache = wc
+        return wc
 
     def _llm(self, endpoint=None):
         ep = endpoint or LLM_ENDPOINT
+        # Un nombre de 3 niveles (catalog.schema.name) es un MODEL SERVICE de Unity Gateway:
+        # se invoca por 'model=' + AI Gateway con el SP dedicado (M2M OAuth, token completo). Un
+        # nombre plano es un serving endpoint clasico ('endpoint='), con auth del sistema del agente.
+        if "." in ep:
+            cached = self._llm_cache.get(ep)
+            if cached is not None:
+                return cached
+            kwargs = {"model": ep, "use_ai_gateway": True}
+            wc = self._gw_wc()
+            if wc is not None:
+                kwargs["workspace_client"] = wc
+            if "gpt" in ep.lower():
+                kwargs["extra_params"] = {"reasoning_effort": "none"}
+            llm = ChatDatabricks(**kwargs).bind_tools(self.tools)
+            # Cacheamos solo cuando ya tiene el WorkspaceClient del gateway (si no, reconstruir).
+            if wc is not None:
+                self._llm_cache[ep] = llm
+            return llm
         if ep not in self._llm_cache:
             kwargs = {"endpoint": ep}
-            # Los modelos GPT de razonamiento requieren reasoning_effort='none' para
-            # habilitar tool-calling via chat completions.
             if "gpt" in ep.lower():
                 kwargs["extra_params"] = {"reasoning_effort": "none"}
             self._llm_cache[ep] = ChatDatabricks(**kwargs).bind_tools(self.tools)

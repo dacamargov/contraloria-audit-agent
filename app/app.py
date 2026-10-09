@@ -174,11 +174,17 @@ KNOWN_LABELS = {
     "databricks-claude-sonnet-4-5": "Claude Sonnet 4.5",
     "databricks-meta-llama-3-3-70b-instruct": "Llama 3.3 70B",
     "databricks-gemini-2-5-pro": "Gemini 2.5 Pro",
+    # Model services gobernados por Unity Gateway (nombre UC de 3 niveles)
+    "dacamargovws_catalog.contraloria.contraloria_auditoria_opus5": "Claude Opus 5 · gobernado (AI Gateway)",
+    "dacamargovws_catalog.contraloria.contraloria_auditoria_genimi_flash": "Gemini Flash · gobernado (AI Gateway)",
 }
 
 
 def _pretty_llm(name):
-    return KNOWN_LABELS.get(name) or name.replace("databricks-", "").replace("-", " ").strip().title()
+    if name in KNOWN_LABELS:
+        return KNOWN_LABELS[name]
+    base = name.rsplit(".", 1)[-1] if "." in name else name.replace("databricks-", "")
+    return base.replace("_", " ").replace("-", " ").strip().title()
 
 
 @st.cache_data(ttl=600, show_spinner=False)

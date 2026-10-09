@@ -6,7 +6,7 @@
 # MAGIC guarda como PDF en el Volume `informes-analiticos`. Lo dispara la app.
 
 # COMMAND ----------
-# MAGIC %pip install "markdown2>=2.4,<3" "xhtml2pdf>=0.2.11,<0.3" "matplotlib>=3.7,<4" "pypdf>=4,<5"
+# MAGIC %pip install "markdown2>=2.4,<3" "xhtml2pdf>=0.2.11,<0.3" "matplotlib>=3.7,<4" "pypdf>=4,<5" "openai>=1.40,<2"
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -31,6 +31,26 @@ import json, re, datetime
 import mlflow.deployments
 from databricks.sdk import WorkspaceClient
 w = WorkspaceClient()
+
+# --- LLM: soporta serving endpoints clasicos Y model services de Unity Gateway ---
+# Un nombre de 3 niveles (catalog.schema.name) es un model service gobernado: se invoca por el
+# AI Gateway (API OpenAI-compatible en /ai-gateway/mlflow/v1, model = nombre UC completo). Un
+# nombre plano usa la ruta clasica de serving endpoints (mlflow.deployments).
+if "." in LLM:
+    from openai import OpenAI
+    _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+    _host = "https://" + spark.conf.get("spark.databricks.workspaceUrl")
+    _oa = OpenAI(api_key=_ctx.apiToken().get(), base_url=f"{_host}/ai-gateway/mlflow/v1")
+
+    def llm_predict(messages, max_tokens):
+        r = _oa.chat.completions.create(model=LLM, messages=messages, max_tokens=max_tokens)
+        return r.choices[0].message.content or ""
+else:
+    _dc = mlflow.deployments.get_deploy_client("databricks")
+
+    def llm_predict(messages, max_tokens):
+        r = _dc.predict(endpoint=LLM, inputs={"messages": messages, "max_tokens": max_tokens})
+        return r["choices"][0]["message"]["content"]
 
 # --- Resolver los sujetos: aceptar sigla O nombre completo -> lista de siglas ---
 sect = {r["sigla"].upper(): r.asDict() for r in spark.table(f"{CATALOG}.{SCHEMA}.sectorizacion").collect()}
@@ -125,13 +145,11 @@ chart_data = {}
 if not evidence:
     md = "# Informe no generado\n\nNo hay evidencia suficiente para los sujetos solicitados."
 else:
-    client = mlflow.deployments.get_deploy_client("databricks")
     # 1) Informe (markdown)
-    resp = client.predict(endpoint=LLM, inputs={"messages": [
+    md = llm_predict([
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": STRUCTURE + "\n\n=== EVIDENCIA (unica fuente permitida) ===\n\n" + EVIDENCIA_TXT},
-    ], "max_tokens": 16000})
-    md = resp["choices"][0]["message"]["content"]
+    ], max_tokens=16000)
 
     # 2) Llamada dedicada: SOLO datos numericos para graficar (JSON puro)
     CHART_PROMPT = (
@@ -147,11 +165,10 @@ else:
         "=== EVIDENCIA ===\n\n" + EVIDENCIA_TXT
     )
     try:
-        cresp = client.predict(endpoint=LLM, inputs={"messages": [
+        ctext = llm_predict([
             {"role": "system", "content": "Eres un extractor de datos. Respondes unicamente JSON valido."},
             {"role": "user", "content": CHART_PROMPT},
-        ], "max_tokens": 1200})
-        ctext = cresp["choices"][0]["message"]["content"]
+        ], max_tokens=2000)
         cm = re.search(r"\{.*\}", ctext, re.DOTALL)
         chart_data = json.loads(cm.group(0)) if cm else {}
     except Exception as e:

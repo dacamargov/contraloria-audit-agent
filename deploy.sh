@@ -32,20 +32,27 @@ VOL_INF="$(read_var volume_informes)"
 VOL_ANA="$(read_var volume_analiticos)"
 AGENT_EP="$(read_var agent_endpoint)"
 LLM_EP="$(read_var llm_endpoint)"
-GOVERNED_LLM="$(read_var governed_llm_endpoint)"
+GOVERNED_LLMS="$(read_var governed_llm_endpoints)"
+CREATE_EP="$(read_var create_llm_endpoint)"
 
 echo "==> 0/6  Sincronizando app/app.yaml con las variables del bundle"
-python3 - "$HERE/app/app.yaml" "$AGENT_EP" "$CATALOG" "$SCHEMA" "$VOL_INF" "$VOL_ANA" "$LLM_EP" <<'PY'
+python3 - "$HERE/app/app.yaml" "$AGENT_EP" "$CATALOG" "$SCHEMA" "$VOL_INF" "$VOL_ANA" "$LLM_EP" "$GOVERNED_LLMS" <<'PY'
 import re, sys
-path, agent, cat, sch, vinf, vana, llm = sys.argv[1:8]
+path, agent, cat, sch, vinf, vana, llm, governed = sys.argv[1:9]
+gov_list = [x.strip() for x in governed.split(",") if x.strip()]
+# Con AI Gateway activo, el modelo por defecto de la app es el primer endpoint gobernado.
+default_llm = gov_list[0] if gov_list else llm
+gov_val = ",".join(gov_list)
 vals = {"AGENT_ENDPOINT": agent, "CONTRALORIA_CATALOG": cat, "CONTRALORIA_SCHEMA": sch,
-        "VOL_INFORMES": vinf, "VOL_ANALITICOS": vana, "DEFAULT_LLM": llm}
+        "VOL_INFORMES": vinf, "VOL_ANALITICOS": vana, "DEFAULT_LLM": default_llm,
+        "GOVERNED_LLMS": gov_val}
 s = open(path).read()
 for k, v in vals.items():
+    repl_v = f'"{v}"' if k == "GOVERNED_LLMS" else v   # GOVERNED_LLMS siempre entre comillas
     # Reemplaza el 'value:' que sigue a '- name: K' (solo si la clave existe).
-    s, n = re.subn(rf'(- name: {k}\n\s*value: ).*', rf'\g<1>{v}', s)
-    if n == 0 and k == "DEFAULT_LLM":  # DEFAULT_LLM es opcional: lo agrega si falta
-        s = s.rstrip() + f"\n  - name: DEFAULT_LLM\n    value: {v}\n"
+    s, n = re.subn(rf'(- name: {k}\n\s*value: ).*', lambda m: m.group(1) + repl_v, s)
+    if n == 0 and k in ("DEFAULT_LLM", "GOVERNED_LLMS"):  # opcionales: se agregan si faltan
+        s = s.rstrip() + f"\n  - name: {k}\n    value: {repl_v}\n"
 open(path, "w").write(s)
 print("    app.yaml sincronizado")
 PY
@@ -59,9 +66,11 @@ databricks bundle run setup "${FLAGS[@]}"
 echo "==> 3/6  Ingesta inicial de PDFs (parseo + chunks + indexacion)"
 databricks bundle run ingest "${FLAGS[@]}"
 
-# Mosaic AI Gateway (opt-in): solo si databricks.yml define governed_llm_endpoint.
-if [ -n "$GOVERNED_LLM" ]; then
-  echo "==> 3.5/6  AI Gateway: creando/actualizando el endpoint LLM gobernado '$GOVERNED_LLM'"
+# Mosaic AI Gateway (opt-in): crea UN endpoint gobernado solo si se define create_llm_endpoint.
+# (Si creas los endpoints por tu cuenta, deja create_llm_endpoint vacio y solo llena
+#  governed_llm_endpoints con sus nombres; el agente y la app los usaran.)
+if [ -n "$CREATE_EP" ]; then
+  echo "==> 3.5/6  AI Gateway: creando/actualizando el endpoint LLM gobernado '$CREATE_EP'"
   databricks bundle run setup_ai_gateway "${FLAGS[@]}"
 fi
 

@@ -156,6 +156,9 @@ st.markdown(f"""
 # --- Selector de modelo: AUTODETECTA que LLMs de chat tiene la cuenta y ofrece los
 #     recomendados que esten disponibles (asi se adapta a cada workspace). ---
 DEFAULT_LLM = os.environ.get("DEFAULT_LLM", "databricks-claude-opus-4-7")
+# AI Gateway: endpoints gobernados a ofrecer (lista coma). Si esta definida, el selector muestra
+# SOLO estos modelos (todos pasan por la gobernanza) y el primero es el modelo por defecto.
+GOVERNED_LLMS = [x.strip() for x in os.environ.get("GOVERNED_LLMS", "").split(",") if x.strip()]
 # Modelos recomendados (orden = como aparecen). Solo se muestran los que existan en la cuenta.
 PREFERRED_LLMS = [
     "databricks-gpt-6-luna", "databricks-gpt-5-6-sol", "databricks-claude-opus-4-7",
@@ -197,6 +200,8 @@ def _available_chat_llms():
 
 
 def list_chat_llms():
+    if GOVERNED_LLMS:                                  # AI Gateway: solo endpoints gobernados
+        return list(GOVERNED_LLMS)
     av = _available_chat_llms()
     if not av:
         return list(PREFERRED_LLMS)                    # sin permiso para listar: lista curada

@@ -1,9 +1,9 @@
 resources:
   jobs:
 
-    # Mosaic AI Gateway (opt-in): crea/actualiza el endpoint LLM gobernado.
-    # Es seguro ejecutarlo siempre: si governed_llm_endpoint esta vacio o falta el secreto,
-    # el notebook termina sin cambios. Correr ANTES de deploy_agent cuando se habilita.
+    # Mosaic AI Gateway (opt-in): CREA/actualiza UN endpoint LLM gobernado por corrida.
+    # Es seguro ejecutarlo siempre: si create_llm_endpoint esta vacio o falta el secreto, el
+    # notebook termina sin cambios. Repite por cada modelo que quieras gobernar.
     setup_ai_gateway:
       name: "[contraloria] setup_ai_gateway"
       tasks:
@@ -13,7 +13,7 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               schema: ${var.schema}
-              governed_llm_endpoint: ${var.governed_llm_endpoint}
+              create_llm_endpoint: ${var.create_llm_endpoint}
               ext_provider: ${var.ext_provider}
               ext_model: ${var.ext_model}
               ext_secret_scope: ${var.ext_secret_scope}

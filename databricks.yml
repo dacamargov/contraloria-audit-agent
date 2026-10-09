@@ -38,12 +38,20 @@ variables:
     description: Nombre del endpoint de serving del agente
     default: contraloria_audit_agent
 
-  # --- Mosaic AI Gateway (opt-in). Vacio => deshabilitado; el agente usa el FM de sistema. ---
-  # Para activar la gobernanza (usage, rate limit, guardrails PII/safety, fallbacks) se crea un
-  # endpoint External Model propio y se enruta el agente por el. Requisito: guardar la API key
-  # del proveedor como secreto (ver src/setup_ai_gateway.py y el README).
-  governed_llm_endpoint:
-    description: Endpoint LLM gobernado por AI Gateway. Vacio = deshabilitado (usa FM de sistema).
+  # --- Mosaic AI Gateway (opt-in). Vacio => deshabilitado; el agente usa los FM de sistema. ---
+  # governed_llm_endpoints: LISTA (separada por comas) de endpoints de chat gobernados por AI
+  # Gateway que YA existen (los creas via UI/CLI o con el job 'setup_ai_gateway', uno por modelo).
+  # Cuando se define, la app ofrece SOLO estos modelos y el agente los usa (allowlist); el primero
+  # es el modelo por defecto. Asi TODO el trafico del agente pasa por endpoints gobernados.
+  governed_llm_endpoints:
+    description: Lista (coma) de endpoints LLM gobernados a USAR. Vacio = FM de sistema.
+    default: ""
+
+  # --- Helper opcional para CREAR un endpoint gobernado (job 'setup_ai_gateway'). ---
+  # Define create_llm_endpoint + proveedor/modelo/secreto y corre el job para crear ese endpoint
+  # con todo el AI Gateway. Repite por cada modelo. Si los creas por tu cuenta, ignora estas vars.
+  create_llm_endpoint:
+    description: Nombre del endpoint gobernado a CREAR con setup_ai_gateway (opcional)
     default: ""
   ext_provider:
     description: Proveedor External Model del endpoint gobernado (anthropic|openai|cohere)

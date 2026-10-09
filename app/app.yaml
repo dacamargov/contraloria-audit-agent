@@ -14,6 +14,10 @@ env:
     value: contraloria_audit_agent
   - name: DEFAULT_LLM
     value: databricks-claude-opus-4-7
+  # Lista (coma) de endpoints LLM gobernados por AI Gateway. Si no esta vacia, el selector de
+  # la app ofrece SOLO estos. Se sincroniza desde 'governed_llm_endpoints' del bundle.
+  - name: GOVERNED_LLMS
+    value: ""
   - name: CONTRALORIA_CATALOG
     value: dacamargovws_catalog
   - name: CONTRALORIA_SCHEMA

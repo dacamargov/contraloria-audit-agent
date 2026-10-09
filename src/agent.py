@@ -27,9 +27,10 @@ LLM_ENDPOINT = os.environ.get("CONTRALORIA_LLM", "databricks-claude-opus-4-7")
 VS_INDEX = os.environ.get("CONTRALORIA_VS_INDEX", f"{CATALOG}.{SCHEMA}.doc_chunks_index")
 NUM_RESULTS = int(os.environ.get("CONTRALORIA_NUM_RESULTS", "10"))
 MAX_ITERS = int(os.environ.get("CONTRALORIA_MAX_ITERS", "14"))
-# Con AI Gateway activo se fuerza el LLM gobernado: se ignora el 'llm_endpoint' que envie la app,
-# para que TODO el trafico pase por la gobernanza (usage, rate limit, guardrails, fallbacks).
-FORCE_LLM = os.environ.get("CONTRALORIA_FORCE_LLM", "").lower() in ("1", "true", "yes")
+# Con AI Gateway activo, el agente solo acepta LLMs de esta allowlist (los endpoints gobernados).
+# Si la app pide otro, se usa el gobernado por defecto -> ningun trafico escapa a la gobernanza.
+# Vacio = sin restriccion (se honra cualquier modelo que elija la app, modo FM de sistema).
+ALLOWED_LLMS = {s.strip() for s in os.environ.get("CONTRALORIA_ALLOWED_LLMS", "").split(",") if s.strip()}
 
 SYSTEM_PROMPT = """Eres el asistente analitico de la Contraloria General de la Republica para la
 planeacion y focalizacion de auditorias. Conversas en lenguaje natural con el equipo auditor; el
@@ -151,10 +152,13 @@ class ContraloriaAgent(ResponsesAgent):
         return self._llm_cache[ep]
 
     def _override_llm(self, request):
-        if FORCE_LLM:            # gobernanza no evitable: siempre el LLM gobernado por defecto
-            return None
         ci = getattr(request, "custom_inputs", None) or {}
-        return ci.get("llm_endpoint") if isinstance(ci, dict) else None
+        ov = ci.get("llm_endpoint") if isinstance(ci, dict) else None
+        # Si hay allowlist (AI Gateway), solo se honra el override si esta gobernado; si no,
+        # None -> se usa el LLM gobernado por defecto (no se escapa de la gobernanza).
+        if ALLOWED_LLMS and ov not in ALLOWED_LLMS:
+            return None
+        return ov
 
     def _to_lc(self, request):
         out = []

@@ -28,7 +28,7 @@
 # COMMAND ----------
 dbutils.widgets.text("catalog", "dacamargovws_catalog")
 dbutils.widgets.text("schema", "contraloria")
-dbutils.widgets.text("governed_llm_endpoint", "")   # vacio = deshabilitado (opt-in)
+dbutils.widgets.text("create_llm_endpoint", "")   # nombre del endpoint gobernado a CREAR (opt-in)
 dbutils.widgets.text("ext_provider", "anthropic")
 dbutils.widgets.text("ext_model", "claude-opus-4-20250514")
 dbutils.widgets.text("ext_secret_scope", "contraloria")
@@ -41,7 +41,7 @@ dbutils.widgets.text("pii_behavior", "BLOCK")        # BLOCK | NONE
 
 CATALOG = dbutils.widgets.get("catalog").strip()
 SCHEMA = dbutils.widgets.get("schema").strip()
-GOV_EP = dbutils.widgets.get("governed_llm_endpoint").strip()
+CREATE_EP = dbutils.widgets.get("create_llm_endpoint").strip()
 PROVIDER = dbutils.widgets.get("ext_provider").strip().lower()
 MODEL = dbutils.widgets.get("ext_model").strip()
 SCOPE = dbutils.widgets.get("ext_secret_scope").strip()
@@ -53,11 +53,11 @@ RATE_CALLS = int(dbutils.widgets.get("rate_limit_calls").strip() or "120")
 PII = dbutils.widgets.get("pii_behavior").strip().upper() or "BLOCK"
 
 # COMMAND ----------
-# Opt-in: si no se definio el endpoint gobernado, no hay nada que hacer.
-if not GOV_EP:
-    print("AI Gateway DESHABILITADO (governed_llm_endpoint vacio). "
-          "Para activarlo, define la variable 'governed_llm_endpoint' en databricks.yml, "
-          "guarda la API key como secreto y vuelve a desplegar. Saliendo sin cambios.")
+# Opt-in: si no se definio el endpoint a crear, no hay nada que hacer.
+if not CREATE_EP:
+    print("setup_ai_gateway: no hay endpoint que crear (create_llm_endpoint vacio). "
+          "Para crear uno, define 'create_llm_endpoint' + proveedor/modelo/secreto en databricks.yml. "
+          "Saliendo sin cambios.")
     dbutils.notebook.exit("disabled")
 
 # COMMAND ----------
@@ -124,7 +124,7 @@ ai_gateway = {
         "enabled": True,
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
-        "table_name_prefix": GOV_EP,
+        "table_name_prefix": CREATE_EP,
     },
     "rate_limits": [
         {"calls": RATE_CALLS, "renewal_period": "minute", "key": "endpoint"},
@@ -137,7 +137,7 @@ ai_gateway = {
     "fallback_config": {"enabled": use_fallback},
 }
 
-body = {"name": GOV_EP, "config": {"served_entities": served}, "ai_gateway": ai_gateway}
+body = {"name": CREATE_EP, "config": {"served_entities": served}, "ai_gateway": ai_gateway}
 
 # COMMAND ----------
 # Crea el endpoint si no existe; si existe, actualiza served_entities y la config de gateway.
@@ -151,22 +151,23 @@ def _existe(name):
         return False
 
 
-if _existe(GOV_EP):
-    print(f"Endpoint '{GOV_EP}' ya existe -> actualizando served_entities y AI Gateway...")
-    w.api_client.do("PUT", f"/api/2.0/serving-endpoints/{GOV_EP}/config",
+if _existe(CREATE_EP):
+    print(f"Endpoint '{CREATE_EP}' ya existe -> actualizando served_entities y AI Gateway...")
+    w.api_client.do("PUT", f"/api/2.0/serving-endpoints/{CREATE_EP}/config",
                     body={"served_entities": served})
-    w.api_client.do("PUT", f"/api/2.0/serving-endpoints/{GOV_EP}/ai-gateway", body=ai_gateway)
+    w.api_client.do("PUT", f"/api/2.0/serving-endpoints/{CREATE_EP}/ai-gateway", body=ai_gateway)
 else:
-    print(f"Creando endpoint gobernado '{GOV_EP}'...")
+    print(f"Creando endpoint gobernado '{CREATE_EP}'...")
     w.api_client.do("POST", "/api/2.0/serving-endpoints", body=body)
 
 # COMMAND ----------
 import json
 
-final = w.serving_endpoints.get(GOV_EP)
-print("Endpoint gobernado listo:", GOV_EP)
+final = w.serving_endpoints.get(CREATE_EP)
+print("Endpoint gobernado listo:", CREATE_EP)
 print("Proveedor primario:", PROVIDER, "/", MODEL, "| fallback:",
       f"{FB_PROVIDER}/{FB_MODEL}" if use_fallback else "ninguno")
 print("Gateway aplicado:\n", json.dumps(ai_gateway, indent=2, ensure_ascii=False))
-print("\nSiguiente paso: redesplegar el agente con governed_llm_endpoint =", GOV_EP,
-      "(deploy_agent.py enruta el agente por este endpoint y fuerza la gobernanza).")
+print(f"\nSiguiente paso: agrega '{CREATE_EP}' a la variable 'governed_llm_endpoints' en "
+      "databricks.yml (lista separada por comas) y vuelve a desplegar. El agente lo usara "
+      "(allowlist) y la app lo ofrecera en el selector de modelo.")

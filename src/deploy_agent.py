@@ -14,13 +14,13 @@ dbutils.widgets.text("schema", "contraloria")
 dbutils.widgets.text("llm_endpoint", "databricks-claude-opus-4-7")
 dbutils.widgets.text("embedding_endpoint", "databricks-gte-large-en")
 dbutils.widgets.text("agent_endpoint", "contraloria_audit_agent")
-dbutils.widgets.text("governed_llm_endpoint", "")  # AI Gateway opt-in: vacio = FM de sistema
+dbutils.widgets.text("governed_llm_endpoints", "")  # AI Gateway opt-in: lista coma; vacio = FM sistema
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
 LLM = dbutils.widgets.get("llm_endpoint")
 EMB = dbutils.widgets.get("embedding_endpoint")
 AGENT_ENDPOINT = dbutils.widgets.get("agent_endpoint")
-GOVERNED_LLM = dbutils.widgets.get("governed_llm_endpoint").strip()
+GOVERNED_LLMS = [x.strip() for x in dbutils.widgets.get("governed_llm_endpoints").split(",") if x.strip()]
 
 VS_INDEX = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
 UC_MODEL = f"{CATALOG}.{SCHEMA}.contraloria_audit_agent"
@@ -71,13 +71,14 @@ offered = [m for m in PREFERRED_LLMS if m in detected] or detected[:6]
 default_llm = LLM if (LLM in detected or not detected) else (offered[0] if offered else LLM)
 llm_endpoints = list(dict.fromkeys([default_llm, *offered]))  # default primero, sin duplicados
 
-# AI GATEWAY: si hay un endpoint LLM gobernado, se enruta TODO el trafico por el. Se vuelve el
-# unico LLM habilitado (gobernanza no evitable: usage, rate limit, guardrails, fallbacks) y se
-# fuerza en el agente ignorando overrides por peticion (ver CONTRALORIA_FORCE_LLM en agent.py).
-if GOVERNED_LLM:
-    default_llm = GOVERNED_LLM
-    llm_endpoints = [GOVERNED_LLM]
-    print("AI Gateway ACTIVO: el agente usa solo el endpoint gobernado ->", GOVERNED_LLM)
+# AI GATEWAY: si hay endpoints LLM gobernados, el agente usa SOLO esos (gobernanza no evitable:
+# usage, rate limit, guardrails, fallbacks). Se convierten en los unicos LLM habilitados y se
+# aplican como allowlist en el agente (ver CONTRALORIA_ALLOWED_LLMS en agent.py); el primero es
+# el modelo por defecto. La app ofrece exactamente esta lista.
+if GOVERNED_LLMS:
+    default_llm = GOVERNED_LLMS[0]
+    llm_endpoints = list(dict.fromkeys(GOVERNED_LLMS))
+    print("AI Gateway ACTIVO: el agente usa solo endpoints gobernados ->", llm_endpoints)
 print("LLMs habilitados para el agente:", llm_endpoints)
 llm_resources = [DatabricksServingEndpoint(endpoint_name=e) for e in llm_endpoints]
 resources = [
@@ -116,9 +117,10 @@ _env = {
     "CONTRALORIA_SCHEMA": SCHEMA,
     "CONTRALORIA_LLM": default_llm,
 }
-# Con AI Gateway activo, el agente ignora el LLM elegido en la app y usa solo el gobernado.
-if GOVERNED_LLM:
-    _env["CONTRALORIA_FORCE_LLM"] = "1"
+# Con AI Gateway activo, el agente solo acepta LLMs de la lista gobernada (allowlist); si la app
+# pide otro, cae al gobernado por defecto. Asi ningun trafico escapa a la gobernanza.
+if GOVERNED_LLMS:
+    _env["CONTRALORIA_ALLOWED_LLMS"] = ",".join(llm_endpoints)
 agents.deploy(
     UC_MODEL, ver, scale_to_zero=True, endpoint_name=AGENT_ENDPOINT,
     environment_vars=_env,

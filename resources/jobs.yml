@@ -42,6 +42,7 @@ resources:
               llm_endpoint: ${var.llm_endpoint}
               embedding_endpoint: ${var.embedding_endpoint}
               agent_endpoint: ${var.agent_endpoint}
+              governed_llm_endpoint: ${var.governed_llm_endpoint}
 
     # Generacion del informe analitico (lo dispara la app con parametros).
     generate_report:

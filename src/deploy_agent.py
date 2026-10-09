@@ -14,11 +14,13 @@ dbutils.widgets.text("schema", "contraloria")
 dbutils.widgets.text("llm_endpoint", "databricks-claude-opus-4-7")
 dbutils.widgets.text("embedding_endpoint", "databricks-gte-large-en")
 dbutils.widgets.text("agent_endpoint", "contraloria_audit_agent")
+dbutils.widgets.text("governed_llm_endpoint", "")  # AI Gateway opt-in: vacio = FM de sistema
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
 LLM = dbutils.widgets.get("llm_endpoint")
 EMB = dbutils.widgets.get("embedding_endpoint")
 AGENT_ENDPOINT = dbutils.widgets.get("agent_endpoint")
+GOVERNED_LLM = dbutils.widgets.get("governed_llm_endpoint").strip()
 
 VS_INDEX = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
 UC_MODEL = f"{CATALOG}.{SCHEMA}.contraloria_audit_agent"
@@ -68,6 +70,14 @@ offered = [m for m in PREFERRED_LLMS if m in detected] or detected[:6]
 # El LLM por defecto debe existir en la cuenta; si no, se usa el primero ofrecido.
 default_llm = LLM if (LLM in detected or not detected) else (offered[0] if offered else LLM)
 llm_endpoints = list(dict.fromkeys([default_llm, *offered]))  # default primero, sin duplicados
+
+# AI GATEWAY: si hay un endpoint LLM gobernado, se enruta TODO el trafico por el. Se vuelve el
+# unico LLM habilitado (gobernanza no evitable: usage, rate limit, guardrails, fallbacks) y se
+# fuerza en el agente ignorando overrides por peticion (ver CONTRALORIA_FORCE_LLM en agent.py).
+if GOVERNED_LLM:
+    default_llm = GOVERNED_LLM
+    llm_endpoints = [GOVERNED_LLM]
+    print("AI Gateway ACTIVO: el agente usa solo el endpoint gobernado ->", GOVERNED_LLM)
 print("LLMs habilitados para el agente:", llm_endpoints)
 llm_resources = [DatabricksServingEndpoint(endpoint_name=e) for e in llm_endpoints]
 resources = [
@@ -101,13 +111,17 @@ from databricks import agents
 # REPRODUCIBILIDAD: se inyecta la config de la cuenta como variables de entorno del endpoint,
 # para que el agente servido use el catalog/schema/LLM correctos (no los defaults del codigo).
 # Asi el mismo agent.py funciona en cualquier workspace sin editar codigo.
+_env = {
+    "CONTRALORIA_CATALOG": CATALOG,
+    "CONTRALORIA_SCHEMA": SCHEMA,
+    "CONTRALORIA_LLM": default_llm,
+}
+# Con AI Gateway activo, el agente ignora el LLM elegido en la app y usa solo el gobernado.
+if GOVERNED_LLM:
+    _env["CONTRALORIA_FORCE_LLM"] = "1"
 agents.deploy(
     UC_MODEL, ver, scale_to_zero=True, endpoint_name=AGENT_ENDPOINT,
-    environment_vars={
-        "CONTRALORIA_CATALOG": CATALOG,
-        "CONTRALORIA_SCHEMA": SCHEMA,
-        "CONTRALORIA_LLM": default_llm,
-    },
+    environment_vars=_env,
 )
 print("Despliegue iniciado ->", AGENT_ENDPOINT, "| default LLM:", default_llm)
 

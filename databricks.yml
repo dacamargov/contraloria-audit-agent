@@ -38,6 +38,41 @@ variables:
     description: Nombre del endpoint de serving del agente
     default: contraloria_audit_agent
 
+  # --- Mosaic AI Gateway (opt-in). Vacio => deshabilitado; el agente usa el FM de sistema. ---
+  # Para activar la gobernanza (usage, rate limit, guardrails PII/safety, fallbacks) se crea un
+  # endpoint External Model propio y se enruta el agente por el. Requisito: guardar la API key
+  # del proveedor como secreto (ver src/setup_ai_gateway.py y el README).
+  governed_llm_endpoint:
+    description: Endpoint LLM gobernado por AI Gateway. Vacio = deshabilitado (usa FM de sistema).
+    default: ""
+  ext_provider:
+    description: Proveedor External Model del endpoint gobernado (anthropic|openai|cohere)
+    default: anthropic
+  ext_model:
+    description: Modelo del proveedor (p.ej. claude-opus-4-20250514, gpt-4o)
+    default: claude-opus-4-20250514
+  ext_secret_scope:
+    description: Scope de secretos de Databricks con las API keys externas
+    default: contraloria
+  ext_secret_key:
+    description: Clave del secreto con la API key del proveedor primario
+    default: anthropic_api_key
+  ext_fallback_provider:
+    description: Proveedor de fallback (opcional; vacio = sin fallback)
+    default: ""
+  ext_fallback_model:
+    description: Modelo de fallback (opcional)
+    default: ""
+  ext_fallback_secret_key:
+    description: Clave del secreto con la API key del proveedor de fallback
+    default: openai_api_key
+  rate_limit_calls:
+    description: Rate limit GLOBAL por endpoint, llamadas por minuto
+    default: "120"
+  pii_behavior:
+    description: Comportamiento de guardrails ante PII (BLOCK | NONE)
+    default: BLOCK
+
 targets:
   dev:
     mode: development

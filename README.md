@@ -34,10 +34,12 @@ App (Streamlit): Chat | Informe analitico (PDF) | Cargar PDF
 deploy.sh                 # despliegue completo en un comando
 databricks.yml            # bundle: variables + targets  (EDITAR host/catalog/schema/warehouse)
 resources/jobs.yml        # jobs: setup, ingest, deploy_agent, generate_report
+resources/ai_gateway.yml  # job opt-in: endpoint LLM gobernado por Mosaic AI Gateway
 resources/app.yml         # app
 src/setup.py              # sectorizacion + tabla chunks + Vector Search (una vez)
 src/ingest.py             # PDF -> chunks + sync indice (trigger por archivo)
 src/agent.py              # definicion del agente (codigo del modelo)
+src/setup_ai_gateway.py   # crea el endpoint LLM gobernado (AI Gateway, opt-in)
 src/deploy_agent.py       # registra + despliega el agente (autodetecta LLMs)
 src/generate_report.py    # genera el informe analitico en PDF
 app/                      # app Streamlit (app.py, app.yaml, requirements.txt)
@@ -127,6 +129,55 @@ y en `app/app.py`) y vuelve a correr `deploy.sh` (o `deploy_agent` + republicar 
   databricks api post /serving-endpoints/contraloria_audit_agent/invocations -p $P \
     --json '{"input":[{"role":"user","content":"Que hallazgos fiscales tiene la CVC y sus cuantias?"}]}'
   ```
+
+## Gobernanza con Mosaic AI Gateway (opt-in)
+
+Por defecto el agente llama a los **foundation models de sistema** (`databricks-claude-*`), que
+son gestionados por Databricks y no se pueden gobernar a nivel de usuario. Para aplicar
+**gobernanza completa** sobre las llamadas al LLM —**usage tracking**, **rate limiting** global
+por endpoint, **guardrails** (deteccion de PII + safety en entrada y salida) y **fallbacks**— se
+usa un **endpoint External Model propio** gobernado por Mosaic AI Gateway, y se **enruta el
+agente por el**.
+
+> **Por que no en el endpoint del agente:** el endpoint tipo `agent/v1/responses` solo soporta
+> *inference tables* (ya activas). Rate limits, usage tracking y guardrails solo existen en la
+> **capa de chat** (`llm/v1/chat`), de ahi el endpoint External Model dedicado.
+
+**Activarlo (3 pasos):**
+
+1. Guarda la API key del proveedor como **secreto** (una vez):
+   ```bash
+   databricks secrets create-scope contraloria
+   databricks secrets put-secret contraloria anthropic_api_key   # pega la API key
+   # opcional, para fallback:  databricks secrets put-secret contraloria openai_api_key
+   ```
+2. En `databricks.yml` define las variables de gateway (el resto tiene defaults):
+   ```yaml
+   governed_llm_endpoint: contraloria_llm_gov   # nombre del endpoint gobernado a crear
+   ext_provider: anthropic                      # anthropic | openai | cohere
+   ext_model: claude-opus-4-20250514            # id del modelo del proveedor
+   # opcional (fallback):
+   ext_fallback_provider: openai
+   ext_fallback_model: gpt-4o
+   # opcional: rate_limit_calls: "120"  (llamadas/min, global)   pii_behavior: BLOCK
+   ```
+3. Vuelve a desplegar:
+   ```bash
+   ./deploy.sh <perfil-cli>
+   ```
+   El script, al ver `governed_llm_endpoint` definido, ejecuta `setup_ai_gateway` (crea/actualiza
+   el endpoint gobernado con todo el AI Gateway) **antes** de `deploy_agent`, que entonces enruta
+   **todo** el trafico del agente por ese endpoint y **fuerza** la gobernanza (ignora el modelo
+   que elija la app: `CONTRALORIA_FORCE_LLM`).
+
+**Mientras `governed_llm_endpoint` este vacio, todo sigue igual** (one-click con los FM de
+sistema); el job `setup_ai_gateway` es seguro de correr: si esta deshabilitado o falta el
+secreto, termina sin cambios.
+
+> **Nota de este entorno (FE sandbox):** aqui no se pudo validar en vivo porque (a) el endpoint
+> del agente no soporta estas funciones por tipo y (b) no se tienen permisos de admin sobre los
+> FM de sistema para gobernarlos. La configuracion queda **versionada y lista** para la cuenta
+> del cliente, donde se habilita con los 3 pasos de arriba.
 
 ## Notas
 

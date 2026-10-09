@@ -32,6 +32,7 @@ VOL_INF="$(read_var volume_informes)"
 VOL_ANA="$(read_var volume_analiticos)"
 AGENT_EP="$(read_var agent_endpoint)"
 LLM_EP="$(read_var llm_endpoint)"
+GOVERNED_LLM="$(read_var governed_llm_endpoint)"
 
 echo "==> 0/6  Sincronizando app/app.yaml con las variables del bundle"
 python3 - "$HERE/app/app.yaml" "$AGENT_EP" "$CATALOG" "$SCHEMA" "$VOL_INF" "$VOL_ANA" "$LLM_EP" <<'PY'
@@ -57,6 +58,12 @@ databricks bundle run setup "${FLAGS[@]}"
 
 echo "==> 3/6  Ingesta inicial de PDFs (parseo + chunks + indexacion)"
 databricks bundle run ingest "${FLAGS[@]}"
+
+# Mosaic AI Gateway (opt-in): solo si databricks.yml define governed_llm_endpoint.
+if [ -n "$GOVERNED_LLM" ]; then
+  echo "==> 3.5/6  AI Gateway: creando/actualizando el endpoint LLM gobernado '$GOVERNED_LLM'"
+  databricks bundle run setup_ai_gateway "${FLAGS[@]}"
+fi
 
 echo "==> 4/6  Desplegando el agente (autodetecta los LLMs disponibles en la cuenta)"
 databricks bundle run deploy_agent "${FLAGS[@]}"

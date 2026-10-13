@@ -65,11 +65,19 @@ app/                      # app Streamlit (app.py, app.yaml, requirements.txt)
   (Un workspace admin con permisos de UC sobre el schema cumple todo lo anterior.)
 
 **Local:**
-- Databricks CLI autenticada: `databricks auth login --host https://<tu-workspace>`.
+- **Databricks CLI nuevo** (v0.2xx+) autenticado: `databricks auth login --host https://<tu-workspace> --profile <perfil>`.
 - `python3` disponible (lo usa `deploy.sh` para leer valores del bundle).
+- `bash` (macOS/Linux; en Windows usa Git Bash o WSL).
 - PDFs de informes en `/Volumes/<catalog>/<schema>/informes`.
 
+> Instalación detallada de estas herramientas y de los prerrequisitos del workspace (incluido crear
+> catalog/schema/volúmenes y configurar el SP de gobernanza): **[`INSTALACION.md`](INSTALACION.md)**.
+
 ## Como desplegar (un comando)
+
+> **¿Lo instalas en el workspace del cliente desde cero?** Sigue la guía granular
+> [`INSTALACION.md`](INSTALACION.md) (instalar el CLI, autenticar, crear catalog/schema/volúmenes,
+> configurar la gobernanza y desplegar, paso a paso).
 
 1. Edita en `databricks.yml` los 4 valores marcados con `<-- EDITAR` (host, catalog, schema, warehouse_id).
 2. Ejecuta:

@@ -5,7 +5,7 @@
 # MAGIC Correr **despues** de que el indice de Vector Search tenga datos (tras la ingesta).
 
 # COMMAND ----------
-# MAGIC %pip install -U mlflow databricks-langchain databricks-agents databricks-vectorsearch
+# MAGIC %pip install -U mlflow databricks-langchain databricks-openai databricks-agents databricks-vectorsearch
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -15,12 +15,19 @@ dbutils.widgets.text("llm_endpoint", "databricks-claude-opus-4-7")
 dbutils.widgets.text("embedding_endpoint", "databricks-gte-large-en")
 dbutils.widgets.text("agent_endpoint", "contraloria_audit_agent")
 dbutils.widgets.text("governed_llm_endpoints", "")  # AI Gateway opt-in: lista coma; vacio = FM sistema
+# Secret con las credenciales M2M OAuth del SP dedicado que llama los model services del gateway.
+dbutils.widgets.text("gw_secret_scope", "contraloria")
+dbutils.widgets.text("gw_client_id_key", "gw_sp_client_id")
+dbutils.widgets.text("gw_client_secret_key", "gw_sp_secret")
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
 LLM = dbutils.widgets.get("llm_endpoint")
 EMB = dbutils.widgets.get("embedding_endpoint")
 AGENT_ENDPOINT = dbutils.widgets.get("agent_endpoint")
 GOVERNED_LLMS = [x.strip() for x in dbutils.widgets.get("governed_llm_endpoints").split(",") if x.strip()]
+GW_SECRET_SCOPE = dbutils.widgets.get("gw_secret_scope")
+GW_CLIENT_ID_KEY = dbutils.widgets.get("gw_client_id_key")
+GW_CLIENT_SECRET_KEY = dbutils.widgets.get("gw_client_secret_key")
 
 VS_INDEX = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
 UC_MODEL = f"{CATALOG}.{SCHEMA}.contraloria_audit_agent"
@@ -31,6 +38,12 @@ import mlflow
 from mlflow.models.resources import (
     DatabricksServingEndpoint, DatabricksVectorSearchIndex, DatabricksFunction,
 )
+# Model services de Unity Gateway (nombre de 3 niveles). Clase disponible en mlflow reciente;
+# el fallback evita romper si la version instalada aun no la expone.
+try:
+    from mlflow.models.resources import DatabricksUCModelService
+except Exception:
+    DatabricksUCModelService = None
 from pkg_resources import get_distribution
 
 _ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
@@ -80,7 +93,20 @@ if GOVERNED_LLMS:
     llm_endpoints = list(dict.fromkeys(GOVERNED_LLMS))
     print("AI Gateway ACTIVO: el agente usa solo endpoints gobernados ->", llm_endpoints)
 print("LLMs habilitados para el agente:", llm_endpoints)
-llm_resources = [DatabricksServingEndpoint(endpoint_name=e) for e in llm_endpoints]
+
+
+def _llm_resource(name):
+    # Model service de Unity Gateway (catalog.schema.name) -> resource de tipo UC Model Service.
+    # NOTA: el agente NO llama estos model services con su token nativo (auto-auth u OBO), porque
+    # ese token es downscoped y el AI Gateway no resuelve model services -> 404. En su lugar usa un
+    # SP dedicado via M2M OAuth (ver CONTRALORIA_GW_CLIENT_ID/SECRET). Declaramos el recurso igual
+    # para dejar registrada la dependencia. Nombre plano -> serving endpoint clasico.
+    if "." in name and DatabricksUCModelService is not None:
+        return DatabricksUCModelService(model_service_name=name)
+    return DatabricksServingEndpoint(endpoint_name=name)
+
+
+llm_resources = [_llm_resource(e) for e in llm_endpoints]
 resources = [
     *llm_resources,
     DatabricksServingEndpoint(endpoint_name=EMB),
@@ -98,6 +124,10 @@ with mlflow.start_run():
         pip_requirements=[
             f"mlflow=={get_distribution('mlflow').version}",
             f"databricks-langchain=={get_distribution('databricks-langchain').version}",
+            # databricks-openai arma la URL del AI Gateway (use_ai_gateway -> /ai-gateway/mlflow/v1).
+            # Se FIJA para que el entorno servido enrute los model services al gateway (si no se
+            # fija, el serving puede instalar una version sin soporte y caer a /serving-endpoints).
+            f"databricks-openai=={get_distribution('databricks-openai').version}",
             f"langchain-core=={get_distribution('langchain-core').version}",
             f"databricks-vectorsearch=={get_distribution('databricks-vectorsearch').version}",
         ],
@@ -121,6 +151,15 @@ _env = {
 # pide otro, cae al gobernado por defecto. Asi ningun trafico escapa a la gobernanza.
 if GOVERNED_LLMS:
     _env["CONTRALORIA_ALLOWED_LLMS"] = ",".join(llm_endpoints)
+    # URL publica del workspace: el agente la usa para enrutar el AI Gateway con el host
+    # publico (no el host interno de serving) al llamar los model services. Sin esto,
+    # config.host seria el host interno -> el gateway da 404.
+    _env["CONTRALORIA_WORKSPACE_HOST"] = WorkspaceClient().config.host
+    # Credenciales M2M OAuth del SP dedicado para el gateway (via secret de Databricks). El SP
+    # tiene EXECUTE sobre los model services -> token de identidad completa que el gateway resuelve.
+    # Model Serving sustituye {{secrets/scope/key}} en tiempo de ejecucion.
+    _env["CONTRALORIA_GW_CLIENT_ID"] = f"{{{{secrets/{GW_SECRET_SCOPE}/{GW_CLIENT_ID_KEY}}}}}"
+    _env["CONTRALORIA_GW_CLIENT_SECRET"] = f"{{{{secrets/{GW_SECRET_SCOPE}/{GW_CLIENT_SECRET_KEY}}}}}"
 agents.deploy(
     UC_MODEL, ver, scale_to_zero=True, endpoint_name=AGENT_ENDPOINT,
     environment_vars=_env,
@@ -176,3 +215,31 @@ if _esperar_estable():
     print("Versiones servidas tras limpieza:", _viejos() or "solo la actual (v%s)" % ver)
 else:
     print("Aviso: el endpoint no se estabilizo a tiempo; limpieza de versiones omitida.")
+
+# COMMAND ----------
+# AI GATEWAY: concede EXECUTE sobre los model services gobernados al SP del agente. La
+# declaracion de recursos (DatabricksUCModelService) concede USE CATALOG/USE SCHEMA, pero el
+# EXECUTE sobre el securable 'model_service' puede no aplicarse automaticamente; se concede aqui
+# (best-effort, idempotente) a los SPs que tengan USE_SCHEMA en el schema (incluye el SP
+# autogenerado del agente). Solo se concede lo que el que despliega ya posee (debe ser owner/MANAGE
+# del model service). Sin este EXECUTE, el agente recibe 404 'does not exist' al llamar el gateway.
+if GOVERNED_LLMS:
+    import re as _re
+    _ms_list = [m for m in GOVERNED_LLMS if "." in m]
+    try:
+        _sg = WorkspaceClient().api_client.do(
+            "GET", f"/api/2.1/unity-catalog/permissions/schema/{CATALOG}.{SCHEMA}")
+        _sps = sorted({a.get("principal") for a in (_sg.get("privilege_assignments") or [])
+                       if any("USE_SCHEMA" in str(p) for p in (a.get("privileges") or []))
+                       and _re.match(r"^[0-9a-f-]{36}$", a.get("principal") or "")})
+        for _ms in _ms_list:
+            for _sp in _sps:
+                try:
+                    WorkspaceClient().api_client.do(
+                        "PATCH", f"/api/2.1/unity-catalog/permissions/model_service/{_ms}",
+                        body={"changes": [{"principal": _sp, "add": ["EXECUTE"]}]})
+                except Exception as _e:
+                    print("  aviso grant EXECUTE", _ms, _sp, ":", _e)
+        print("EXECUTE en model services concedido a SPs:", _sps or "(ninguno detectado)")
+    except Exception as _e:
+        print("Aviso: no se pudo auto-conceder EXECUTE en model services:", _e)

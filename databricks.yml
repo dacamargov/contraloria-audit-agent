@@ -38,20 +38,21 @@ variables:
     description: Nombre del endpoint de serving del agente
     default: contraloria_audit_agent
 
-  # --- Mosaic AI Gateway (opt-in). Vacio => deshabilitado; el agente usa los FM de sistema. ---
-  # governed_llm_endpoints: LISTA (separada por comas) de endpoints de chat gobernados por AI
-  # Gateway que YA existen (los creas via UI/CLI o con el job 'setup_ai_gateway', uno por modelo).
-  # Cuando se define, la app ofrece SOLO estos modelos y el agente los usa (allowlist); el primero
-  # es el modelo por defecto. Asi TODO el trafico del agente pasa por endpoints gobernados.
+  # --- Unity (AI) Gateway (opt-in). Vacio => el agente usa los FM de sistema. ---
+  # governed_llm_endpoints: LISTA (coma) de MODEL SERVICES de Unity Gateway (nombre UC de 3
+  # niveles: catalog.schema.name) que YA existen (los creas en la UI de Unity Gateway, donde
+  # configuras guardrails, rate limits, usage, inference tables y fallbacks). Cuando se define,
+  # la app ofrece SOLO estos modelos y el agente los usa (allowlist); el primero es el default.
+  # Asi TODO el trafico del agente pasa por model services gobernados por Unity Catalog.
   governed_llm_endpoints:
-    description: Lista (coma) de endpoints LLM gobernados a USAR. Vacio = FM de sistema.
-    default: ""
+    description: Lista (coma) de MODEL SERVICES de Unity Gateway a USAR. Vacio = FM de sistema.
+    default: "dacamargovws_catalog.contraloria.contraloria_auditoria_opus5,dacamargovws_catalog.contraloria.contraloria_auditoria_genimi_flash"
 
-  # --- Helper opcional para CREAR un endpoint gobernado (job 'setup_ai_gateway'). ---
-  # Define create_llm_endpoint + proveedor/modelo/secreto y corre el job para crear ese endpoint
-  # con todo el AI Gateway. Repite por cada modelo. Si los creas por tu cuenta, ignora estas vars.
+  # --- Helper LEGACY para CREAR un endpoint External Model gobernado (job 'setup_ai_gateway'). ---
+  # Solo si NO usas Unity Gateway model services. Define create_llm_endpoint + proveedor/modelo/
+  # secreto y corre el job. Si usas model services de Unity Gateway (recomendado), deja esto vacio.
   create_llm_endpoint:
-    description: Nombre del endpoint gobernado a CREAR con setup_ai_gateway (opcional)
+    description: (Legacy) Nombre del endpoint External Model a CREAR con setup_ai_gateway (opcional)
     default: ""
   ext_provider:
     description: Proveedor External Model del endpoint gobernado (anthropic|openai|cohere)

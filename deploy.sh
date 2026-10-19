@@ -23,9 +23,28 @@ FLAGS=(-t "$TARGET" -p "$PROFILE")
 APP_NAME="contraloria-audit-agent"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Detecta un interprete de Python 3 que REALMENTE funcione. En Windows el binario suele
+# llamarse 'python' (no 'python3') y, ademas, el "App Execution Alias" de la Microsoft Store
+# intercepta 'python'/'python3' con un stub que no ejecuta Python (por eso probamos import).
+PY=""
+for _cand in python3 python py; do
+  if command -v "$_cand" >/dev/null 2>&1 && "$_cand" -c 'import sys; assert sys.version_info[0]==3' >/dev/null 2>&1; then
+    PY="$_cand"; break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "ERROR: no se encontro un Python 3 funcional en el PATH."
+  echo "  - Instala Python 3 desde https://www.python.org/downloads/ (marca 'Add python.exe to PATH')."
+  echo "  - En Windows, DESACTIVA los alias de la Microsoft Store:"
+  echo "      Configuracion > Aplicaciones > Configuracion avanzada de aplicaciones >"
+  echo "      Alias de ejecucion de aplicaciones  ->  apaga 'python.exe' y 'python3.exe'."
+  echo "  - Cierra y reabre la terminal y verifica:  python --version"
+  exit 1
+fi
+
 # Variables resueltas del bundle (unica fuente de verdad: databricks.yml).
 CFG_JSON="$(databricks bundle validate "${FLAGS[@]}" -o json)"
-read_var() { echo "$CFG_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['variables']['$1']['value'])"; }
+read_var() { echo "$CFG_JSON" | "$PY" -c "import sys,json;print(json.load(sys.stdin)['variables']['$1']['value'])"; }
 CATALOG="$(read_var catalog)"
 SCHEMA="$(read_var schema)"
 VOL_INF="$(read_var volume_informes)"
@@ -36,7 +55,7 @@ GOVERNED_LLMS="$(read_var governed_llm_endpoints)"
 CREATE_EP="$(read_var create_llm_endpoint)"
 
 echo "==> 0/6  Sincronizando app/app.yaml con las variables del bundle"
-python3 - "$HERE/app/app.yaml" "$AGENT_EP" "$CATALOG" "$SCHEMA" "$VOL_INF" "$VOL_ANA" "$LLM_EP" "$GOVERNED_LLMS" <<'PY'
+"$PY" - "$HERE/app/app.yaml" "$AGENT_EP" "$CATALOG" "$SCHEMA" "$VOL_INF" "$VOL_ANA" "$LLM_EP" "$GOVERNED_LLMS" <<'PY'
 import re, sys
 path, agent, cat, sch, vinf, vana, llm, governed = sys.argv[1:9]
 gov_list = [x.strip() for x in governed.split(",") if x.strip()]
@@ -81,9 +100,9 @@ echo "==> 5/6  Publicando la app"
 databricks bundle run contraloria_app "${FLAGS[@]}"
 
 echo "==> 6/6  Otorgando acceso a los Volumes al service principal de la app"
-APP_SP="$(databricks apps get "$APP_NAME" -p "$PROFILE" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['service_principal_client_id'])")"
+APP_SP="$(databricks apps get "$APP_NAME" -p "$PROFILE" -o json | "$PY" -c "import sys,json;print(json.load(sys.stdin)['service_principal_client_id'])")"
 grant() {  # grant <securable_type> <full_name> <priv1,priv2,...>
-  local privs; privs="$(python3 -c "import sys,json;print(json.dumps(sys.argv[1].split(',')))" "$3")"
+  local privs; privs="$("$PY" -c "import sys,json;print(json.dumps(sys.argv[1].split(',')))" "$3")"
   databricks grants update "$1" "$2" -p "$PROFILE" \
     --json "{\"changes\":[{\"principal\":\"$APP_SP\",\"add\":$privs}]}" >/dev/null
 }
@@ -94,4 +113,4 @@ grant volume  "$CATALOG.$SCHEMA.$VOL_ANA"        "READ_VOLUME,WRITE_VOLUME"
 echo "    grants aplicados al SP $APP_SP"
 
 echo ""
-echo "Listo. App: $(databricks apps get "$APP_NAME" -p "$PROFILE" -o json | python3 -c "import sys,json;print(json.load(sys.stdin).get('url',''))")"
+echo "Listo. App: $(databricks apps get "$APP_NAME" -p "$PROFILE" -o json | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('url',''))")"

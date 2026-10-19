@@ -5,11 +5,11 @@ resources:
       description: "Asistente de auditoria: chat con citas + generacion de informes analiticos"
       source_code_path: ../app
       resources:
-        - name: agent
-          description: Endpoint de serving del agente (chat)
-          serving_endpoint:
-            name: ${var.agent_endpoint}
-            permission: CAN_QUERY
+        # NOTA: el endpoint del agente NO se declara aqui como recurso del bundle a proposito.
+        # Ese endpoint lo crea el job 'deploy_agent' (paso 4), DESPUES de que el bundle crea la
+        # app; declararlo aqui haria que la creacion de la app fallara con 404 en workspaces
+        # nuevos (el endpoint aun no existe). En su lugar, deploy.sh otorga CAN_QUERY al SP de la
+        # app sobre el endpoint una vez desplegado el agente (seccion de grants al final).
         - name: report_job
           description: Job que genera el informe analitico en PDF
           job:

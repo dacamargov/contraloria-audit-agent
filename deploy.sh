@@ -110,7 +110,15 @@ grant catalog "$CATALOG"                         "USE_CATALOG"
 grant schema  "$CATALOG.$SCHEMA"                 "USE_SCHEMA"
 grant volume  "$CATALOG.$SCHEMA.$VOL_INF"        "READ_VOLUME,WRITE_VOLUME"
 grant volume  "$CATALOG.$SCHEMA.$VOL_ANA"        "READ_VOLUME,WRITE_VOLUME"
-echo "    grants aplicados al SP $APP_SP"
+echo "    grants de Unity Catalog aplicados al SP $APP_SP"
+
+# CAN_QUERY al SP de la app sobre el endpoint del agente. Va aqui (y no como recurso del bundle)
+# porque el endpoint lo crea 'deploy_agent' DESPUES de que el bundle crea la app; asi el orden
+# funciona en workspaces nuevos donde el endpoint aun no existia al desplegar.
+EP_ID="$(databricks serving-endpoints get "$AGENT_EP" -p "$PROFILE" -o json | "$PY" -c "import sys,json;print(json.load(sys.stdin)['id'])")"
+databricks permissions update serving-endpoints "$EP_ID" -p "$PROFILE" \
+  --json "{\"access_control_list\":[{\"service_principal_name\":\"$APP_SP\",\"permission_level\":\"CAN_QUERY\"}]}" >/dev/null
+echo "    CAN_QUERY otorgado al SP $APP_SP sobre el endpoint '$AGENT_EP'"
 
 echo ""
 echo "Listo. App: $(databricks apps get "$APP_NAME" -p "$PROFILE" -o json | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('url',''))")"

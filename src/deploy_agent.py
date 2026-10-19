@@ -34,6 +34,16 @@ UC_MODEL = f"{CATALOG}.{SCHEMA}.contraloria_audit_agent"
 
 # COMMAND ----------
 import os
+
+# IMPORTANTE: al llamar log_model con input_example, MLflow VALIDA el agente ejecutando agent.py
+# EN ESTE proceso (no en el endpoint), por lo que las env vars del endpoint aun no aplican y
+# agent.py caeria en sus defaults hardcodeados (p.ej. 'dacamargovws_catalog'). Propagamos aqui el
+# catalog/schema/indice reales para que la validacion resuelva el indice y las funciones UC en el
+# catalogo correcto del workspace donde se despliega.
+os.environ["CONTRALORIA_CATALOG"] = CATALOG
+os.environ["CONTRALORIA_SCHEMA"] = SCHEMA
+os.environ["CONTRALORIA_VS_INDEX"] = VS_INDEX
+
 import mlflow
 from mlflow.models.resources import (
     DatabricksServingEndpoint, DatabricksVectorSearchIndex, DatabricksFunction,
@@ -115,6 +125,10 @@ resources = [
 ]
 input_example = {"input": [{"role": "user",
     "content": "A que sector y delegada corresponde la CVC y que otros sujetos comparten esa delegada?"}]}
+
+# La VALIDACION de log_model ejecuta agent.py aqui: usa como LLM por defecto el primero habilitado
+# (ya detectado como disponible en ESTE workspace) para que la prediccion de prueba sea invocable.
+os.environ["CONTRALORIA_LLM"] = default_llm
 
 # COMMAND ----------
 with mlflow.start_run():

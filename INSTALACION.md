@@ -36,11 +36,14 @@ curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.s
 ```
 (En macOS también: `brew tap databricks/tap && brew install databricks`.)
 
-### Windows
-```powershell
-winget install Databricks.DatabricksCLI
+### Windows (recomendado: Git Bash)
+`deploy.sh` es un script **bash**, así que en Windows corre dentro de **Git Bash** (viene con
+[Git for Windows](https://git-scm.com/download/win)) o **WSL**. Dentro de Git Bash, instala el CLI
+igual que en Linux:
+```bash
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 ```
-(O usa **WSL/Git Bash** y sigue los pasos de Linux — recomendado, porque `deploy.sh` es un script bash.)
+(Alternativa en PowerShell: `winget install Databricks.DatabricksCLI`.)
 
 ### Verificar
 ```bash
@@ -54,13 +57,26 @@ con el método de arriba y abre una terminal nueva.
 ## 2. Instalar las demás herramientas locales
 
 ```bash
-python3 --version    # debe existir (lo usa deploy.sh para leer el bundle). 3.9+ está bien.
+python --version     # (o python3) lo usa deploy.sh para leer el bundle. 3.9+ está bien.
 git --version        # para clonar el repo
 bash --version       # macOS/Linux ya lo traen. En Windows: Git Bash o WSL.
 ```
 
-Si falta `python3`: instálalo desde [python.org](https://www.python.org/downloads/) o con tu gestor
+Si falta Python: instálalo desde [python.org](https://www.python.org/downloads/) o con tu gestor
 de paquetes (`brew install python`, `apt install python3`, etc.).
+
+> `deploy.sh` detecta automáticamente el intérprete (`python3`, `python` o `py`), así que funciona
+> en macOS/Linux/Windows sin cambios.
+
+### ⚠️ Windows: desactivar el alias de la Microsoft Store
+En Windows, al escribir `python` suele aparecer:
+*"No se encontró Python; ejecuta sin argumentos para instalar desde Microsoft Store..."*. Es un
+**alias de ejecución** que intercepta `python`/`python3` aunque Python ya esté instalado. Desactívalo:
+
+1. **Configuración → Aplicaciones → Configuración avanzada de aplicaciones → Alias de ejecución de
+   aplicaciones** → **apaga** `python.exe` y `python3.exe`.
+2. Al instalar desde python.org, marca **"Add python.exe to PATH"**.
+3. Cierra y reabre Git Bash y verifica: `python --version` debe responder `Python 3.x` (sin abrir la Store).
 
 ---
 
@@ -151,17 +167,18 @@ Abre `databricks.yml` y cambia estos valores (busca los marcados con `<-- EDITAR
 | `variables.schema.default` | Tu schema (ej. `contraloria`) |
 | `variables.warehouse_id.default` | El ID del warehouse serverless (paso 5) |
 
-> ⚠️ **MUY IMPORTANTE — gobernanza (`governed_llm_endpoints`):** por defecto trae **nombres del
-> sandbox de demo** (`dacamargovws_catalog...`). **Debes** cambiarlos. Elige una de las dos opciones
-> del paso 7 **antes** de desplegar.
+> **Gobernanza (`governed_llm_endpoints`):** por defecto viene **vacío** (`""`), que usa los
+> Foundation Models del sistema (Opción A, portable). Solo cámbialo si vas a gobernar con Unity
+> Gateway (Opción B del paso 7), poniendo model services de **tu** catálogo. **Nunca** dejes nombres
+> de otro workspace/catálogo: no existirán en el del cliente y el agente fallará.
 
 ---
 
 ## 7. Elegir el modo de LLM (gobernanza)
 
-### Opción A — FM de sistema (lo más rápido para empezar)
+### Opción A — FM de sistema (lo más rápido para empezar, y es el valor por defecto)
 
-Deja `governed_llm_endpoints` **vacío** en `databricks.yml`:
+Deja `governed_llm_endpoints` **vacío** en `databricks.yml` (ya viene así):
 
 ```yaml
   governed_llm_endpoints:
@@ -306,15 +323,48 @@ con **"Can use"**. Esos usuarios podrán abrir la URL de la app.
 
 ---
 
+## 11.5 Actualizar el repo ya clonado
+
+Como editaste `databricks.yml`, un `git pull` directo dará
+`Your local changes ... would be overwritten`. Guarda tus ediciones, actualiza y reaplícalas:
+
+```bash
+git stash push -m "mis-edits" databricks.yml
+git pull --ff-only
+git stash pop
+```
+
+Si `git stash pop` reporta conflicto en `databricks.yml`, abre el archivo, deja **tus** valores
+(host/catalog/schema/warehouse_id y tu `governed_llm_endpoints`), borra las marcas `<<<<<<<`,
+`=======`, `>>>>>>>`, y vuelve a correr `./deploy.sh <perfil>`.
+
+---
+
+## 11.6 Alternativa: desplegar desde el Workspace (sin terminal local)
+
+Si no quieres instalar el CLI en tu máquina, usa el notebook
+[`notebooks/deploy_desde_workspace.py`](notebooks/deploy_desde_workspace.py):
+
+1. Clona el repo como **Git folder** en el workspace (Workspace → Create → Git folder → URL del repo).
+2. Edita `databricks.yml` en el workspace (host/catalog/schema/warehouse_id).
+3. Sube los PDFs al Volume `informes`.
+4. Abre el notebook, adjúntalo a un cluster y **ejecútalo de arriba a abajo**. Autentica con el token
+   de contexto (sin `databricks auth login`), instala el CLI y corre `deploy.sh` desde Git Bash de `%sh`.
+
+---
+
 ## 12. Problemas comunes
 
 | Síntoma | Causa / solución |
 |---------|------------------|
 | `databricks: command not found` o versión `0.1x` | CLI mal instalado. Reinstala con el script del paso 1 y abre terminal nueva. |
-| `./deploy.sh: Permission denied` | Falta `chmod +x deploy.sh` (paso 4). |
-| `deploy.sh` falla en `read_var` | `python3` no está instalado o no en PATH (paso 2). |
+| `./deploy.sh: Permission denied` | Falta `chmod +x deploy.sh` (paso 4). O ejecútalo como `bash deploy.sh <perfil>`. |
+| *"No se encontró Python... Microsoft Store"* (Windows) | Alias de ejecución de la Store interceptando `python`. Desactívalo (paso 2, sección Windows) y verifica `python --version`. |
+| `deploy.sh` corta con "no se encontro un Python 3 funcional" | No hay Python 3 en PATH, o el alias de la Store lo bloquea. Instala desde python.org + desactiva alias (paso 2). |
+| `Error: cannot create resources.apps...: Git repository is required for Databricks Apps in this workspace` | El workspace exige desplegar Apps desde Git ("Only allow app deployments from Git"). Pide al admin desactivar esa política, **o** despliega la app desde un Git folder (Compute → Apps → Create app → Configure Git). |
+| `deploy_agent` falla con `... .doc_chunks_index does not exist` | Index/catalog mal resueltos. Con el repo actualizado ya se corrige (la validación usa el catálogo real). Asegúrate de tener el último `main` (`git pull`). |
 | Agente responde `404 ... 'catalog.schema.x' does not exist` | Opción B mal configurada: el SP no tiene `EXECUTE` sobre el model service, o el secret/scope no coincide, o `CONTRALORIA_WORKSPACE_HOST` no apunta al host público. Revisa el paso 7 y verifica con 7.4. |
-| El selector de la app muestra modelos del sandbox | Olvidaste cambiar `governed_llm_endpoints` en `databricks.yml` (paso 6/7). |
+| El selector de la app muestra modelos de otro workspace | `governed_llm_endpoints` tiene nombres de otro catálogo. Déjalo vacío (Opción A) o pon model services de **tu** catálogo (paso 6/7). |
 | `setup` falla con "Volume not found" / ruta de Volumes | No creaste los volúmenes (paso 5.1) o los nombres no coinciden con `databricks.yml`. |
 | Error de permisos al crear tablas/endpoints | Quien despliega necesita `CREATE` en el schema, crear serving endpoints, Vector Search, jobs y apps (ver "Prerrequisitos" del README). |
 | En Windows `deploy.sh` no corre | Usa **Git Bash** o **WSL** (es un script bash). |

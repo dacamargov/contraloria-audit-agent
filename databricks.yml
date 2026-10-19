@@ -46,7 +46,11 @@ variables:
   # Asi TODO el trafico del agente pasa por model services gobernados por Unity Catalog.
   governed_llm_endpoints:
     description: Lista (coma) de MODEL SERVICES de Unity Gateway a USAR. Vacio = FM de sistema.
-    default: "dacamargovws_catalog.contraloria.contraloria_auditoria_opus5,dacamargovws_catalog.contraloria.contraloria_auditoria_genimi_flash"
+    # VACIO por defecto => el agente/app usan los Foundation Models del sistema (portable, sin
+    # dependencias externas). Para gobernar via Unity Gateway, crea los model services EN TU
+    # catalogo y pon aqui sus nombres de 3 niveles (catalog.schema.name), separados por coma.
+    # OJO: deben vivir en TU catalogo/workspace; no dejes nombres de otro workspace.
+    default: ""                          # <-- EDITAR (opcional: solo si usas Unity Gateway)
 
   # --- Helper LEGACY para CREAR un endpoint External Model gobernado (job 'setup_ai_gateway'). ---
   # Solo si NO usas Unity Gateway model services. Define create_llm_endpoint + proveedor/modelo/

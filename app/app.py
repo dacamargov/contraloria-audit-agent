@@ -325,7 +325,29 @@ PAGE = st.session_state.page
 # --------------------------------------------------------------------------- #
 # 1) CHAT
 # --------------------------------------------------------------------------- #
-def query_agent(messages, llm_endpoint=None):
+import re
+
+# Peticion de GENERAR un informe desde el chat (verbo + 'informe/reporte/analisis'). Se responde
+# en modo BREVE (rapido) y se remite al tab 'Informe analitico' para el informe completo.
+_REPORT_RE = re.compile(
+    r"(crea|gener|haz|hazme|arma|elabor|prepar|dame|realiz|redact|produc|constru|quiero|necesito)\w*"
+    r"\s+(me\s+)?(un[ao]?\s+|el\s+|la\s+)?(informe|reporte|an[aá]lisis)", re.IGNORECASE)
+
+
+def _is_report_request(text):
+    return bool(_REPORT_RE.search(text or ""))
+
+
+def _custom_inputs(llm_endpoint=None, brief=False):
+    ci = {}
+    if llm_endpoint:
+        ci["llm_endpoint"] = llm_endpoint
+    if brief:
+        ci["brief"] = True
+    return ci
+
+
+def query_agent(messages, llm_endpoint=None, brief=False):
     host = w.config.host
     if not host.startswith("http"):
         host = "https://" + host
@@ -333,11 +355,12 @@ def query_agent(messages, llm_endpoint=None):
     headers["Content-Type"] = "application/json"
     url = f"{host}/serving-endpoints/{AGENT_ENDPOINT}/invocations"
     payload = {"input": messages}
-    if llm_endpoint:
-        payload["custom_inputs"] = {"llm_endpoint": llm_endpoint}
-    # (conexion=10s, lectura=600s): peticiones tipo 'informe' recuperan mucha evidencia y la
-    # generacion es larga; un read timeout corto abortaba la respuesta antes de terminar.
-    resp = requests.post(url, headers=headers, json=payload, timeout=(10, 600))
+    ci = _custom_inputs(llm_endpoint, brief)
+    if ci:
+        payload["custom_inputs"] = ci
+    # Modo breve (informe en chat): tope ~20s. Normal: lectura amplia (600s) para respuestas largas.
+    _timeout = (10, 20) if brief else (10, 600)
+    resp = requests.post(url, headers=headers, json=payload, timeout=_timeout)
     resp.raise_for_status()
     data = resp.json()
     last_text = None
@@ -349,7 +372,7 @@ def query_agent(messages, llm_endpoint=None):
     return last_text or "No pude generar una respuesta. Intenta de nuevo."
 
 
-def stream_agent(messages, llm_endpoint=None):
+def stream_agent(messages, llm_endpoint=None, brief=False):
     """Genera la respuesta en streaming (token a token) leyendo SSE del endpoint."""
     host = w.config.host
     if not host.startswith("http"):
@@ -358,11 +381,13 @@ def stream_agent(messages, llm_endpoint=None):
     headers["Content-Type"] = "application/json"
     url = f"{host}/serving-endpoints/{AGENT_ENDPOINT}/invocations"
     payload = {"input": messages, "stream": True}
-    if llm_endpoint:
-        payload["custom_inputs"] = {"llm_endpoint": llm_endpoint}
-    # read timeout amplio: el read timeout mide el hueco SIN datos (p.ej. mientras el agente
-    # recupera evidencia y 'piensa' antes del primer token). 600s evita cortar informes largos.
-    with requests.post(url, headers=headers, json=payload, stream=True, timeout=(10, 600)) as r:
+    ci = _custom_inputs(llm_endpoint, brief)
+    if ci:
+        payload["custom_inputs"] = ci
+    # Modo breve (informe en chat): tope ~20s sin datos. Normal: read timeout amplio (600s) para
+    # tolerar el hueco mientras el agente recupera evidencia y 'piensa' antes del primer token.
+    _timeout = (10, 20) if brief else (10, 600)
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=_timeout) as r:
         r.raise_for_status()
         for raw in r.iter_lines():
             if not raw:
@@ -392,6 +417,7 @@ if PAGE == "chat":
     ss.setdefault("generating", False)   # hay una consulta en curso
     ss.setdefault("partial", "")         # texto recibido hasta ahora (para conservarlo al detener)
     ss.setdefault("stop", False)         # el usuario pidio detener
+    ss.setdefault("brief", False)        # la ultima peticion es un 'informe' en chat (respuesta breve)
 
     # --- Historial ---
     for i, m in enumerate(ss.messages):
@@ -428,14 +454,17 @@ if PAGE == "chat":
             else:
                 # La consulta corre en un hilo para poder interrumpirla AUN mientras el
                 # agente "piensa" (consulta herramientas en el servidor, sin enviar datos).
+                if ss.brief:
+                    st.caption("📄 Respuesta breve. Para el informe completo (con todas las "
+                               "secciones y PDF) usa la pestaña **Informe analitico**.")
                 q = queue.Queue()
                 ev = threading.Event()
                 ss["_cancel_event"] = ev
-                _msgs, _llm = list(ss.messages), SELECTED_LLM
+                _msgs, _llm, _brief = list(ss.messages), SELECTED_LLM, bool(ss.brief)
 
-                def _worker(msgs=_msgs, llm=_llm, q=q, ev=ev):
+                def _worker(msgs=_msgs, llm=_llm, brief=_brief, q=q, ev=ev):
                     try:
-                        for delta in stream_agent(msgs, llm):
+                        for delta in stream_agent(msgs, llm, brief=brief):
                             if ev.is_set():
                                 break
                             q.put(("delta", delta))
@@ -472,7 +501,7 @@ if PAGE == "chat":
                         answer = f"Error al consultar el agente: {err}"
                     else:
                         try:
-                            answer = query_agent(list(ss.messages), SELECTED_LLM)
+                            answer = query_agent(list(ss.messages), SELECTED_LLM, brief=_brief)
                         except Exception as e:
                             answer = f"Error al consultar el agente: {e}"
                 ph.markdown(_md(answer))
@@ -493,6 +522,7 @@ if PAGE == "chat":
             disabled=ss.generating):
         ss.messages.append({"role": "user", "content": prompt})
         ss.generating, ss.stop, ss.partial = True, False, ""
+        ss.brief = _is_report_request(prompt)   # 'crea un informe...' -> respuesta breve y rapida
         st.rerun()
 
 

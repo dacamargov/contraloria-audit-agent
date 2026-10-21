@@ -88,6 +88,25 @@ REGLAS OBLIGATORIAS (siempre):
    en silencio y redacta UNICAMENTE la respuesta final para el usuario, siempre en espanol.
 """
 
+# Modo BREVE (chat): cuando el usuario pide un "informe" DESDE EL CHAT, la respuesta debe ser corta
+# y rapida (el informe completo se genera en la pestana 'Informe analitico'). Limita la evidencia a
+# una sola busqueda y el texto a un resumen ejecutivo.
+BRIEF_SYSTEM_PROMPT = """Eres el asistente de auditoria de la Contraloria General de la Republica.
+El usuario pidio un 'informe/analisis/resumen' DESDE EL CHAT, donde la respuesta debe ser BREVE y
+RAPIDA (no el informe completo).
+
+REGLAS:
+- Haz COMO MAXIMO una (1) busqueda con 'retrieve_audit_evidence' (y, si hace falta, una llamada a
+  'buscar_sectorizacion' para resolver la sigla). No hagas mas busquedas.
+- Responde en MAXIMO ~120 palabras (4-6 lineas): 2 a 4 puntos clave (hallazgos/cuantias/riesgos mas
+  relevantes) con cita [documento, p. N] cuando exista evidencia.
+- NO redactes el informe completo por secciones.
+- No inventes cifras, paginas ni documentos; si no hay evidencia suficiente, dilo en una linea.
+- Termina SIEMPRE con esta linea exacta: "Para el informe completo (todas las secciones y PDF
+  descargable), usa la pestana 'Informe analitico'."
+- Español, tono tecnico de control fiscal.
+"""
+
 
 _REASONING_TYPES = {"reasoning", "thinking", "redacted_thinking", "summary_text"}
 
@@ -226,6 +245,11 @@ class ContraloriaAgent(ResponsesAgent):
             return None
         return ov
 
+    def _brief(self, request):
+        """True si la app pidio respuesta BREVE (informe en el chat -> resumen rapido)."""
+        ci = getattr(request, "custom_inputs", None) or {}
+        return bool(ci.get("brief")) if isinstance(ci, dict) else False
+
     def _to_lc(self, request):
         out = []
         for m in request.input:
@@ -236,10 +260,12 @@ class ContraloriaAgent(ResponsesAgent):
             out.append({"assistant": AIMessage, "system": SystemMessage}.get(role, HumanMessage)(content=content))
         return out
 
-    def _run(self, lc_messages, llm_endpoint=None):
+    def _run(self, lc_messages, llm_endpoint=None, brief=False):
         llm = self._llm(llm_endpoint)
-        messages, ai = [SystemMessage(content=SYSTEM_PROMPT), *lc_messages], None
-        for _ in range(MAX_ITERS):
+        sys_prompt = BRIEF_SYSTEM_PROMPT if brief else SYSTEM_PROMPT
+        max_iters = 3 if brief else MAX_ITERS   # breve: 1 busqueda + respuesta
+        messages, ai = [SystemMessage(content=sys_prompt), *lc_messages], None
+        for _ in range(max_iters):
             ai = llm.invoke(messages)
             messages.append(ai)
             calls = getattr(ai, "tool_calls", None) or []
@@ -256,14 +282,17 @@ class ContraloriaAgent(ResponsesAgent):
         return content or "(sin respuesta)"
 
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-        text = self._run(self._to_lc(request), self._override_llm(request))
+        text = self._run(self._to_lc(request), self._override_llm(request), brief=self._brief(request))
         return ResponsesAgentResponse(output=[self.create_text_output_item(text=text, id="msg-1")])
 
     def predict_stream(self, request: ResponsesAgentRequest) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        brief = self._brief(request)
         llm = self._llm(self._override_llm(request))
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *self._to_lc(request)]
+        sys_prompt = BRIEF_SYSTEM_PROMPT if brief else SYSTEM_PROMPT
+        max_iters = 3 if brief else MAX_ITERS   # breve: 1 busqueda + respuesta
+        messages = [SystemMessage(content=sys_prompt), *self._to_lc(request)]
         item_id, final_text = "msg-1", ""
-        for _ in range(MAX_ITERS):
+        for _ in range(max_iters):
             gathered, turn_text = None, ""
             for chunk in llm.stream(messages):
                 gathered = chunk if gathered is None else gathered + chunk

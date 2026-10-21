@@ -18,6 +18,10 @@ resources:
     ingest:
       name: "[contraloria] ingest"
       trigger:
+        # ACTIVO explicito: aunque 'mode: development' pausa triggers por defecto, al fijarlo por
+        # recurso la ingesta corre sola cuando llega un PDF (y actualiza el indice). Sin esto, hay
+        # que ejecutar el job 'ingest' a mano tras cada subida.
+        pause_status: UNPAUSED
         file_arrival:
           url: /Volumes/${var.catalog}/${var.schema}/${var.volume_informes}/
       tasks:

@@ -159,6 +159,28 @@ if _missing:
     .trigger(availableNow=True).start().awaitTermination())
 
 # COMMAND ----------
+# Reclasificacion AUTOSANADORA: un documento ingerido ANTES de que su sigla estuviera en
+# 'sectorizacion' quedo con sigla/sujeto/sector/delegada en NULL (y por tanto INVISIBLE para el
+# job de informes, que filtra la recuperacion por sigla). Al correr de nuevo -ya con la sigla en
+# el seed- se re-detecta desde el nombre de archivo y se completan esas columnas. Idempotente.
+_null_docs = [r["documento"] for r in spark.sql(
+    f"SELECT DISTINCT documento FROM {CHUNKS_TBL} WHERE sigla IS NULL").collect()]
+_fix = []
+for _doc in _null_docs:
+    _m = metadata(_doc)
+    if _m.get("sigla"):
+        _fix.append(Row(documento=_doc, sigla=_m["sigla"], sujeto=_m.get("sujeto"),
+                        sector=_m.get("sector"), delegada=_m.get("delegada")))
+if _fix:
+    spark.createDataFrame(_fix).createOrReplaceTempView("_fix")
+    spark.sql(f"MERGE INTO {CHUNKS_TBL} t USING _fix s ON t.documento=s.documento "
+              f"WHEN MATCHED THEN UPDATE SET t.sigla=s.sigla, t.sujeto=s.sujeto, "
+              f"t.sector=s.sector, t.delegada=s.delegada")
+    print(f"Reclasificados {len(_fix)} documentos:", [(f['documento'], f['sigla']) for f in _fix])
+else:
+    print("Reclasificacion: no hay documentos con sigla NULL por completar")
+
+# COMMAND ----------
 # Sincroniza el indice de Vector Search (via databricks-sdk, sin conflictos de deps)
 from databricks.sdk import WorkspaceClient
 try:

@@ -335,7 +335,9 @@ def query_agent(messages, llm_endpoint=None):
     payload = {"input": messages}
     if llm_endpoint:
         payload["custom_inputs"] = {"llm_endpoint": llm_endpoint}
-    resp = requests.post(url, headers=headers, json=payload, timeout=180)
+    # (conexion=10s, lectura=600s): peticiones tipo 'informe' recuperan mucha evidencia y la
+    # generacion es larga; un read timeout corto abortaba la respuesta antes de terminar.
+    resp = requests.post(url, headers=headers, json=payload, timeout=(10, 600))
     resp.raise_for_status()
     data = resp.json()
     last_text = None
@@ -358,7 +360,9 @@ def stream_agent(messages, llm_endpoint=None):
     payload = {"input": messages, "stream": True}
     if llm_endpoint:
         payload["custom_inputs"] = {"llm_endpoint": llm_endpoint}
-    with requests.post(url, headers=headers, json=payload, stream=True, timeout=300) as r:
+    # read timeout amplio: el read timeout mide el hueco SIN datos (p.ej. mientras el agente
+    # recupera evidencia y 'piensa' antes del primer token). 600s evita cortar informes largos.
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=(10, 600)) as r:
         r.raise_for_status()
         for raw in r.iter_lines():
             if not raw:

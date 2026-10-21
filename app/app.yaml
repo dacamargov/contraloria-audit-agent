@@ -13,11 +13,13 @@ env:
   - name: AGENT_ENDPOINT
     value: contraloria_audit_agent
   - name: DEFAULT_LLM
-    value: dacamargovws_catalog.contraloria.contraloria_auditoria_opus5
-  # Lista (coma) de endpoints LLM gobernados por AI Gateway. Si no esta vacia, el selector de
-  # la app ofrece SOLO estos. Se sincroniza desde 'governed_llm_endpoints' del bundle.
+    value: databricks-claude-opus-4-7
+  # Lista (coma) de endpoints LLM que ofrece el selector (el primero es el por defecto). Deben
+  # EXISTIR en el workspace. Por defecto usamos endpoints Foundation Model del sistema (validados
+  # con tool-calling). Si usas Unity Gateway, pon aqui los model services gobernados (UC de 3
+  # niveles) y configura las credenciales del SP del gateway en el agente.
   - name: GOVERNED_LLMS
-    value: "dacamargovws_catalog.contraloria.contraloria_auditoria_opus5,dacamargovws_catalog.contraloria.contraloria_auditoria_genimi_flash"
+    value: "databricks-claude-opus-4-7,databricks-claude-opus-5-5"
   - name: CONTRALORIA_CATALOG
     value: dacamargovws_catalog
   - name: CONTRALORIA_SCHEMA

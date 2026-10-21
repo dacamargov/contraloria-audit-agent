@@ -77,7 +77,14 @@ CREATE TABLE IF NOT EXISTS {CHUNKS_TBL} (
   chunk_id STRING, documento STRING, path STRING, content_hash STRING, sigla STRING, sujeto STRING,
   sector STRING, delegada STRING, tipo_auditoria STRING, vigencia STRING,
   pagina INT, chunk_index INT, texto STRING, ingested_at TIMESTAMP
-) TBLPROPERTIES (delta.enableChangeDataFeed = true)
+) TBLPROPERTIES (
+  delta.enableChangeDataFeed = true,
+  -- Retencion amplia del historial/archivos: el indice Delta Sync (incremental) necesita el
+  -- change history de la tabla fuente para sincronizar. Si pasa mucho tiempo sin sync, el default
+  -- (7 dias de archivos) lo deja 'out of retention' y el sync falla. 90 dias da margen holgado.
+  delta.logRetentionDuration = 'interval 90 days',
+  delta.deletedFileRetentionDuration = 'interval 90 days'
+)
 COMMENT 'Chunks de informes de auditoria con metadata de pagina para RAG con citas'
 """)
 # Para despliegues ya existentes: agrega la columna si falta (idempotente).
@@ -85,6 +92,13 @@ try:
     spark.sql(f"ALTER TABLE {CHUNKS_TBL} ADD COLUMNS (content_hash STRING)")
 except Exception:
     pass  # ya existe
+# Idempotente: asegura la retencion amplia tambien en tablas ya creadas.
+try:
+    spark.sql(f"""ALTER TABLE {CHUNKS_TBL} SET TBLPROPERTIES (
+      delta.logRetentionDuration = 'interval 90 days',
+      delta.deletedFileRetentionDuration = 'interval 90 days')""")
+except Exception:
+    pass
 
 # COMMAND ----------
 # MAGIC %md ## 3. Vector Search: endpoint + indice Delta Sync (via databricks-sdk)

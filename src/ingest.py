@@ -30,6 +30,23 @@ import io, re, hashlib, datetime
 from pypdf import PdfReader
 from pyspark.sql import Row
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType
+
+# Esquema EXPLICITO de las filas de chunks. Imprescindible: si un informe trae una sigla que no
+# esta en 'sectorizacion' (p.ej. un sujeto nuevo), sigla/sujeto/sector/delegada son None en TODO
+# el lote y la inferencia de tipos de Spark falla con CANNOT_DETERMINE_TYPE. Con esquema fijo, esas
+# columnas quedan como STRING aunque esten vacias.
+_CHUNK_COLS = ["chunk_id", "documento", "path", "content_hash", "pagina", "chunk_index", "texto",
+               "ingested_at", "sigla", "sujeto", "sector", "delegada", "tipo_auditoria", "vigencia"]
+_CHUNK_SCHEMA = StructType([
+    StructField("chunk_id", StringType()), StructField("documento", StringType()),
+    StructField("path", StringType()), StructField("content_hash", StringType()),
+    StructField("pagina", IntegerType()), StructField("chunk_index", IntegerType()),
+    StructField("texto", StringType()), StructField("ingested_at", TimestampType()),
+    StructField("sigla", StringType()), StructField("sujeto", StringType()),
+    StructField("sector", StringType()), StructField("delegada", StringType()),
+    StructField("tipo_auditoria", StringType()), StructField("vigencia", StringType()),
+])
 
 # Diccionario de sectorizacion para denormalizar sujeto/sector/delegada en cada chunk
 SECT = {r["sigla"].upper(): r.asDict() for r in spark.table(f"{CATALOG}.{SCHEMA}.sectorizacion").collect()}
@@ -82,9 +99,10 @@ def process_pdf(path, content, content_hash):
             ptext = ""
         for ci, ch in enumerate(chunk(ptext)):
             cid = hashlib.md5(f"{fn}|{pageno}|{ci}".encode()).hexdigest()
-            recs.append(Row(chunk_id=cid, documento=fn, path=path, content_hash=content_hash,
-                            pagina=pageno, chunk_index=ci, texto=ch,
-                            ingested_at=datetime.datetime.now(), **meta))
+            # Tupla posicional en el orden EXACTO de _CHUNK_SCHEMA (evita inferencia de tipos).
+            recs.append((cid, fn, path, content_hash, pageno, ci, ch, datetime.datetime.now(),
+                         meta.get("sigla"), meta.get("sujeto"), meta.get("sector"),
+                         meta.get("delegada"), meta.get("tipo_auditoria"), meta.get("vigencia")))
     return recs
 
 def upsert(batch_df, _):
@@ -107,7 +125,7 @@ def upsert(batch_df, _):
         recs += process_pdf(r["path"], content, chash)
     if not recs:
         return
-    spark.createDataFrame(recs).createOrReplaceTempView("_new")
+    spark.createDataFrame(recs, schema=_CHUNK_SCHEMA).createOrReplaceTempView("_new")
     spark.sql(f"MERGE INTO {CHUNKS_TBL} t USING _new s ON t.chunk_id=s.chunk_id "
               f"WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *")
     print(f"{len(recs)} chunks upsertados")

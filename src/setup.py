@@ -47,6 +47,9 @@ seed = [
     ("Autoridad Nacional de Licencias Ambientales", "ANLA", "Medio Ambiente", DELEGADA, TITULAR, None, None),
     ("Fondo para la Vida y la Biodiversidad", "FONDO_VIDA", "Medio Ambiente", DELEGADA, TITULAR, None, "Adscrito al MADS"),
     ("Ministerio de Ambiente y Desarrollo Sostenible", "MADS", "Medio Ambiente", DELEGADA, TITULAR, None, "Cabeza del sector"),
+    # Sector Impuestos (delegada distinta). Necesario para clasificar los informes de la DIAN.
+    ("Direccion de Aduanas y Impuestos Nacionales", "DIAN", "Impuestos",
+     "Contraloria Delegada para Aduanas e Impuestos", None, None, None),
 ]
 schema = StructType([StructField(c, StringType(), True) for c in
                      ["sujeto", "sigla", "sector", "delegada", "delegado_titular", "nit", "observaciones"]])

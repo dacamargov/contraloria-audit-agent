@@ -84,6 +84,80 @@ def resolve_job_id():
             return j.job_id
     return None
 
+
+# --- Estado de ingesta / indexado (para la pagina "Cargar PDF") ---
+INDEX_NAME = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
+
+
+def resolve_ingest_job_id():
+    """Job de ingesta por llegada de archivo (se dispara al subir un PDF)."""
+    try:
+        for j in w.jobs.list():
+            n = (j.settings.name or "").lower()
+            if "ingest" in n and "contraloria" in n:
+                return j.job_id
+    except Exception:
+        pass
+    return None
+
+
+def _index_status():
+    """(ready, rows, message) del indice de Vector Search; None si no se puede leer."""
+    try:
+        s = w.vector_search_indexes.get_index(INDEX_NAME).status
+        return (getattr(s, "ready", None), getattr(s, "indexed_row_count", None),
+                getattr(s, "message", "") or "")
+    except Exception:
+        return (None, None, "")
+
+
+def seguir_ingesta(fname, t_upload_ms):
+    """Barra de progreso: Subido -> Ingiriendo (job) -> Indexando -> Listo.
+
+    Se apoya en el estado del job 'ingest' (fiable) y en el crecimiento del conteo del indice.
+    Degrada con gracia si no hay permiso para leer el indice.
+    """
+    ready0, rows0, _ = _index_status()
+    prog = st.progress(10, text="Subido al Volume. Esperando a que inicie la ingesta automatica...")
+    job_id = resolve_ingest_job_id()
+    job_ok = False
+    t_end = time.time() + 480  # hasta 8 min (trigger ~1 min + sync del indice)
+    while time.time() < t_end:
+        # 1) Estado del run de ingesta disparado por ESTA subida (start_time >= subida).
+        if job_id and not job_ok:
+            try:
+                runs = list(w.jobs.list_runs(job_id=job_id, limit=1))
+                r = runs[0] if runs else None
+                if r and r.start_time and r.start_time >= t_upload_ms and r.state:
+                    lcs = r.state.life_cycle_state.value if r.state.life_cycle_state else ""
+                    rs = r.state.result_state.value if r.state.result_state else ""
+                    if lcs in ("PENDING", "RUNNING", "QUEUED"):
+                        prog.progress(40, text="Ingiriendo y troceando el PDF (parseo por pagina)...")
+                    elif rs == "SUCCESS":
+                        job_ok = True
+                        prog.progress(70, text="Indexando en Vector Search (generando embeddings)...")
+                    elif rs in ("FAILED", "TIMEDOUT", "INTERNAL_ERROR"):
+                        st.error("La ingesta fallo. Revisa el job 'ingest' en Workflows.")
+                        return
+            except Exception:
+                pass
+        # 2) Senal de completado: el indice refleja el nuevo documento (crece el conteo).
+        ready, rows, _ = _index_status()
+        if rows is not None and rows0 is not None and rows > rows0 and ready in (True, None):
+            prog.progress(100, text="✅ Listo para consultar en el Chat y los informes")
+            st.balloons()
+            return
+        # 3) Si el job termino OK pero no podemos leer el indice, lo damos por listo con margen.
+        if job_ok and rows is None:
+            time.sleep(20)
+            prog.progress(100, text="✅ Ingesta completada (el indice puede tardar 1-2 min en reflejarlo)")
+            return
+        time.sleep(6)
+    prog.progress(90, text="Sigue procesando...")
+    st.info("El documento sigue procesando (puede tardar unos minutos mas). Puedes seguir usando "
+            "la app; quedara disponible en breve. Revisa el estado abajo.")
+
+
 st.set_page_config(page_title="Contraloria · Asistente de Auditoria", page_icon="🏛️", layout="wide")
 
 # --- Estilo moderno oscuro ---
@@ -478,8 +552,34 @@ elif PAGE == "upload":
     up = st.file_uploader("Selecciona un PDF", type=["pdf"])
     if up and st.button("Subir al repositorio de informes"):
         dest = f"/Volumes/{CATALOG}/{SCHEMA}/{VOL_INFORMES}/{up.name}"
+        t_upload_ms = int(time.time() * 1000)
         try:
             w.files.upload(dest, up.getvalue(), overwrite=True)
-            st.success(f"Subido a {dest}. La ingesta se disparara automaticamente.")
         except Exception as e:
             st.error(f"Error subiendo el archivo: {e}")
+            st.stop()
+        st.success(f"Subido a {dest}.")
+        # Barra de progreso hasta que el documento quede consultable.
+        seguir_ingesta(up.name, t_upload_ms)
+
+    # --- Estado del repositorio (bajo demanda) ---
+    with st.expander("📊 Estado del repositorio de documentos"):
+        st.caption("Muestra los PDFs cargados y el estado del indice de busqueda.")
+        if st.button("🔄 Verificar estado"):
+            ready, rows, _msg = _index_status()
+            if rows is not None:
+                estado = "🟢 listo" if ready else "🟡 sincronizando"
+                st.markdown(f"**Indice de busqueda:** {estado} · **{rows}** fragmentos indexados.")
+            else:
+                st.markdown("**Indice de busqueda:** estado no disponible (sin permiso de lectura).")
+            try:
+                entries = list(w.files.list_directory_contents(
+                    f"/Volumes/{CATALOG}/{SCHEMA}/{VOL_INFORMES}/"))
+                pdfs = sorted(str(getattr(e, "path", "")).split("/")[-1] for e in entries
+                              if not getattr(e, "is_directory", False)
+                              and str(getattr(e, "path", "")).lower().endswith(".pdf"))
+                st.markdown(f"**{len(pdfs)} PDF(s) en el repositorio:**")
+                for name in pdfs:
+                    st.write("• " + name)
+            except Exception as e:
+                st.warning(f"No se pudo listar el Volume: {e}")

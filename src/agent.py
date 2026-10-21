@@ -299,22 +299,17 @@ class ContraloriaAgent(ResponsesAgent):
                 c = _clean_text(getattr(chunk, "content", None))  # descarta bloques de razonamiento
                 if c:
                     turn_text += c
+                    # Emitimos el texto EN VIVO (token a token), NO al final del turno. Mantener el
+                    # stream activo evita el "hueco" inicial (recuperar evidencia + generar) que
+                    # disparaba el read timeout del cliente. Los turnos que llaman herramientas no
+                    # producen texto visible (el prompt obliga a usarlas "en silencio"), asi que en
+                    # la practica solo se transmite el texto de la respuesta final.
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_text.delta", item_id=item_id, delta=c)
             messages.append(gathered)
             tool_calls = getattr(gathered, "tool_calls", None) or []
             if not tool_calls:
-                # Turno final: solo aqui transmitimos texto al usuario. El texto de los
-                # turnos que llaman herramientas es narracion interna y NO se emite.
                 final_text = turn_text
-                buf = ""
-                for ch in turn_text:                    # replay en fragmentos -> efecto "generandose"
-                    buf += ch
-                    if len(buf) >= 24 or ch in ".\n,;:":
-                        yield ResponsesAgentStreamEvent(
-                            type="response.output_text.delta", item_id=item_id, delta=buf)
-                        buf = ""
-                if buf:
-                    yield ResponsesAgentStreamEvent(
-                        type="response.output_text.delta", item_id=item_id, delta=buf)
                 break
             for tc in tool_calls:                       # ejecuta herramientas y continua (sin emitir texto)
                 tool = self.tools_by_name.get(tc["name"])

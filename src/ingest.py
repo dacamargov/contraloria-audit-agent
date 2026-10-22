@@ -15,9 +15,13 @@
 dbutils.widgets.text("catalog", "dacamargovws_catalog")
 dbutils.widgets.text("schema", "contraloria")
 dbutils.widgets.text("volume_informes", "informes")
+# Endpoint LLM para la deteccion AUTOMATICA de sigla/sujeto/sector (IA function ai_query) de
+# informes de sujetos nuevos que no estan en 'sectorizacion'. Vacio = desactiva la deteccion IA.
+dbutils.widgets.text("classify_llm_endpoint", "databricks-claude-opus-4-7")
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA = dbutils.widgets.get("schema")
 VOL = dbutils.widgets.get("volume_informes")
+CLASSIFY_LLM = dbutils.widgets.get("classify_llm_endpoint").strip()
 
 VOLUME_PATH = f"/Volumes/{CATALOG}/{SCHEMA}/{VOL}"
 CHECKPOINT = f"{VOLUME_PATH}/_checkpoints/ingest"
@@ -49,7 +53,8 @@ _CHUNK_SCHEMA = StructType([
 ])
 
 # Diccionario de sectorizacion para denormalizar sujeto/sector/delegada en cada chunk
-SECT = {r["sigla"].upper(): r.asDict() for r in spark.table(f"{CATALOG}.{SCHEMA}.sectorizacion").collect()}
+SECT_TBL = f"{CATALOG}.{SCHEMA}.sectorizacion"
+SECT = {r["sigla"].upper(): r.asDict() for r in spark.table(SECT_TBL).collect()}
 # Las siglas a detectar salen de la tabla de sectorizacion (no hardcoded): al agregar un
 # sujeto al seed, sus PDFs quedan auto-clasificados. Se prueba primero la sigla mas larga.
 _SIGLAS_ORD = sorted(SECT.keys(), key=len, reverse=True)
@@ -179,6 +184,94 @@ if _fix:
     print(f"Reclasificados {len(_fix)} documentos:", [(f['documento'], f['sigla']) for f in _fix])
 else:
     print("Reclasificacion: no hay documentos con sigla NULL por completar")
+
+# COMMAND ----------
+# DETECCION AUTOMATICA CON IA (ai_query): para los documentos cuya sigla NO se pudo resolver por
+# nombre contra 'sectorizacion' (sujeto nuevo), una IA infiere sigla/sujeto/sector/delegada a
+# partir del nombre de archivo + una muestra del texto. Luego: (1) hace APPEND de las siglas
+# nuevas a 'sectorizacion' (sin pisar filas curadas existentes) y (2) clasifica los chunks de
+# esos documentos. Asi, un informe de un sujeto nuevo queda integrado sin intervencion manual.
+# Resiliente: si la IA falla, los chunks quedan con sigla NULL (recuperables en una corrida futura).
+import json as _json, re as _re
+
+_still_null = [r["documento"] for r in spark.sql(
+    f"SELECT DISTINCT documento FROM {CHUNKS_TBL} WHERE sigla IS NULL").collect()]
+
+if _still_null and CLASSIFY_LLM:
+    from pyspark.sql.functions import expr, lit, concat, col
+    # Muestra de texto (primeras 2 paginas) por documento, para dar contexto al modelo.
+    spark.sql(f"""
+        CREATE OR REPLACE TEMP VIEW _toclass AS
+        SELECT documento, substring(concat_ws(' ', collect_list(texto)), 1, 2500) AS muestra
+        FROM (SELECT documento, texto FROM {CHUNKS_TBL}
+              WHERE sigla IS NULL AND pagina <= 2)
+        GROUP BY documento
+    """)
+    _INSTR = (
+        "Eres un clasificador de sujetos de control fiscal de la Contraloria General de la "
+        "Republica de Colombia. A partir del NOMBRE DE ARCHIVO y una MUESTRA del informe, "
+        "identifica el sujeto auditado y responde UNICAMENTE un objeto JSON (sin texto adicional "
+        "ni markdown) con las claves exactas: "
+        '{"sigla": "sigla oficial en MAYUSCULAS, p.ej. DIAN, CAR, CVC", '
+        '"sujeto": "nombre completo oficial de la entidad", '
+        '"sector": "sector tematico, p.ej. Impuestos, Medio Ambiente, Salud, Minas y Energia, '
+        'Infraestructura", '
+        '"delegada": "Contraloria Delegada responsable si la conoces con certeza, si no null"}. '
+        "No inventes: si un campo no es determinable con seguridad usa null (sigla y sujeto son "
+        "obligatorios). Si no logras identificar el sujeto, responde {\"sigla\": null}."
+    )
+    _rows = (spark.table("_toclass")
+             .withColumn("_prompt", concat(
+                 lit(_INSTR + "\n\nNOMBRE DE ARCHIVO: "), col("documento"),
+                 lit("\n\nMUESTRA:\n"), col("muestra")))
+             .withColumn("_out", expr(f"ai_query('{CLASSIFY_LLM}', _prompt)"))
+             .select("documento", "_out").collect())
+
+    _new_sect, _doc_sigla = {}, {}
+    for _r in _rows:
+        try:
+            _mm = _re.search(r"\{.*\}", _r["_out"] or "", _re.DOTALL)
+            _d = _json.loads(_mm.group(0)) if _mm else {}
+        except Exception:
+            _d = {}
+        _sig = (_d.get("sigla") or "").strip().upper().replace(" ", "_")
+        _suj = (_d.get("sujeto") or "").strip()
+        if not _sig or not _suj:
+            print("[IA] no se pudo clasificar:", _r["documento"]); continue
+        _doc_sigla[_r["documento"]] = _sig
+        _new_sect.setdefault(_sig, dict(sujeto=_suj, sector=(_d.get("sector") or None),
+                                        delegada=(_d.get("delegada") or None)))
+
+    # (1) APPEND de siglas NUEVAS a sectorizacion (WHEN NOT MATCHED -> nunca pisa filas curadas).
+    if _new_sect:
+        _seed = [Row(sujeto=v["sujeto"], sigla=k, sector=v["sector"], delegada=v["delegada"],
+                     delegado_titular=None, nit=None, observaciones="Clasificado por IA en ingesta")
+                 for k, v in _new_sect.items()]
+        _sch = StructType([StructField(c, StringType(), True) for c in
+                           ["sujeto", "sigla", "sector", "delegada", "delegado_titular", "nit", "observaciones"]])
+        spark.createDataFrame(_seed, schema=_sch).createOrReplaceTempView("_ai_sect")
+        spark.sql(f"""
+            MERGE INTO {SECT_TBL} t USING _ai_sect s ON t.sigla = s.sigla
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+        print("[IA] siglas agregadas/confirmadas en sectorizacion:", sorted(_new_sect))
+
+    # (2) Clasifica los chunks: asigna la sigla detectada y toma sujeto/sector/delegada de la
+    #     sectorizacion (asi, si la sigla ya existia curada, ganan los valores curados).
+    if _doc_sigla:
+        _map = [Row(documento=d, sigla=s) for d, s in _doc_sigla.items()]
+        spark.createDataFrame(_map).createOrReplaceTempView("_docmap")
+        spark.sql(f"""
+            MERGE INTO {CHUNKS_TBL} t USING (
+                SELECT m.documento, m.sigla, x.sujeto, x.sector, x.delegada
+                FROM _docmap m JOIN {SECT_TBL} x ON x.sigla = m.sigla) s
+            ON t.documento = s.documento
+            WHEN MATCHED THEN UPDATE SET
+                t.sigla = s.sigla, t.sujeto = s.sujeto, t.sector = s.sector, t.delegada = s.delegada
+        """)
+        print("[IA] documentos clasificados:", [(d, s) for d, s in _doc_sigla.items()])
+elif _still_null:
+    print("Deteccion IA desactivada (classify_llm_endpoint vacio); documentos sin sigla:", _still_null)
 
 # COMMAND ----------
 # Sincroniza el indice de Vector Search (via databricks-sdk, sin conflictos de deps)

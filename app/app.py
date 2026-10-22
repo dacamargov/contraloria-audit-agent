@@ -114,6 +114,28 @@ def _index_status():
         return (None, None, "")
 
 
+def _ya_indexado(fname):
+    """Verifica si el documento YA tiene embeddings creados.
+
+    Consulta el INDICE de Vector Search (no el Volume): filtra por 'documento' = nombre del
+    archivo. Si el indice devuelve al menos una fila, significa que los chunks de ese informe
+    ya fueron generados e indexados (son consultables). Esto da certeza de que los embeddings
+    existen, no solo de que el PDF este en el Volume.
+
+    Devuelve True (ya indexado), False (no aparece) o None (no se pudo verificar).
+    """
+    try:
+        r = w.vector_search_indexes.query_index(
+            index_name=INDEX_NAME,
+            columns=["documento"],
+            filters_json=json.dumps({"documento": fname}),
+            query_text=fname, num_results=1)
+        data = (r.result.data_array if (r and r.result) else None) or []
+        return len(data) > 0
+    except Exception:
+        return None
+
+
 def seguir_ingesta(fname, t_upload_ms, run_id=None):
     """Barra de progreso: Subido -> Ingiriendo (job) -> Indexando -> Listo.
 
@@ -593,7 +615,27 @@ elif PAGE == "upload":
     st.subheader("Cargar un informe de auditoria (PDF)")
     st.caption("Al subirlo se ingiere y se indexa automaticamente para el chat y los informes.")
     up = st.file_uploader("Selecciona un PDF", type=["pdf"])
-    if up and st.button("Subir al repositorio de informes"):
+
+    # Deteccion de duplicado ANTES de subir/ingerir: ¿este informe ya tiene embeddings creados?
+    # Se consulta el indice de Vector Search (no solo el Volume) para tener certeza.
+    _forzar = False
+    _ya = None
+    if up:
+        with st.spinner("Verificando si el informe ya esta indexado..."):
+            _ya = _ya_indexado(up.name)
+        if _ya is True:
+            st.warning(
+                f"⚠️ **'{up.name}' ya esta indexado**: sus embeddings ya fueron creados y el "
+                "informe ya es consultable en el chat y en los informes. No necesitas volver a "
+                "subirlo.")
+            _forzar = st.checkbox(
+                "Reprocesar de todas formas (sobrescribe el PDF en el Volume y vuelve a indexar)",
+                value=False)
+        elif _ya is None:
+            st.caption("No se pudo verificar si ya estaba indexado; puedes continuar con la subida.")
+
+    _bloqueado = bool(up) and (_ya is True) and (not _forzar)
+    if up and st.button("Subir al repositorio de informes", disabled=_bloqueado):
         dest = f"/Volumes/{CATALOG}/{SCHEMA}/{VOL_INFORMES}/{up.name}"
         t_upload_ms = int(time.time() * 1000)
         try:

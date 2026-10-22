@@ -35,3 +35,7 @@ env:
   # Fallback por nombre si 'REPORT_JOB_ID' no estuviera disponible.
   - name: REPORT_JOB_NAME_CONTAINS
     value: "generate_report"
+  # ID del job de ingesta, inyectado desde el recurso 'ingest_job' del bundle. La app lo dispara
+  # (run_now) al subir un PDF, en lugar de depender del trigger por llegada de archivo.
+  - name: INGEST_JOB_ID
+    valueFrom: ingest_job

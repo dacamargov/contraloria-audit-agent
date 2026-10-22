@@ -15,6 +15,11 @@ resources:
           job:
             id: ${resources.jobs.generate_report.id}
             permission: CAN_MANAGE_RUN
+        - name: ingest_job
+          description: Job de ingesta e indexacion (lo dispara la app al subir un PDF)
+          job:
+            id: ${resources.jobs.ingest.id}
+            permission: CAN_MANAGE_RUN
         - name: warehouse
           description: SQL Warehouse serverless
           sql_warehouse:

@@ -32,6 +32,8 @@ resources:
               catalog: ${var.catalog}
               schema: ${var.schema}
               volume_informes: ${var.volume_informes}
+              # IA para auto-detectar sigla/sujeto/sector de sujetos nuevos (vacio = desactiva)
+              classify_llm_endpoint: ${var.llm_endpoint}
 
     # Deploy del agente (una vez, tras la primera ingesta).
     deploy_agent:

@@ -90,7 +90,10 @@ INDEX_NAME = f"{CATALOG}.{SCHEMA}.doc_chunks_index"
 
 
 def resolve_ingest_job_id():
-    """Job de ingesta por llegada de archivo (se dispara al subir un PDF)."""
+    """Job de ingesta (la app lo dispara al subir un PDF). Prefiere el id inyectado por el bundle."""
+    _env = os.environ.get("INGEST_JOB_ID", "").strip()
+    if _env.isdigit():
+        return int(_env)
     try:
         for j in w.jobs.list():
             n = (j.settings.name or "").lower()
@@ -111,24 +114,30 @@ def _index_status():
         return (None, None, "")
 
 
-def seguir_ingesta(fname, t_upload_ms):
+def seguir_ingesta(fname, t_upload_ms, run_id=None):
     """Barra de progreso: Subido -> Ingiriendo (job) -> Indexando -> Listo.
 
-    Se apoya en el estado del job 'ingest' (fiable) y en el crecimiento del conteo del indice.
-    Degrada con gracia si no hay permiso para leer el indice.
+    Se apoya en el estado del run de 'ingest' (fiable) y en el crecimiento del conteo del indice.
+    Si se pasa 'run_id' (la app disparo el job), se sigue ESE run; si no, se busca el ultimo run
+    posterior a la subida. Degrada con gracia si no hay permiso para leer el indice.
     """
     ready0, rows0, _ = _index_status()
-    prog = st.progress(10, text="Subido al Volume. Esperando a que inicie la ingesta automatica...")
+    prog = st.progress(10, text="Subido al Volume. Iniciando la ingesta...")
     job_id = resolve_ingest_job_id()
     job_ok = False
-    t_end = time.time() + 480  # hasta 8 min (trigger ~1 min + sync del indice)
+    t_end = time.time() + 480  # hasta 8 min (ingesta + sync del indice)
     while time.time() < t_end:
-        # 1) Estado del run de ingesta disparado por ESTA subida (start_time >= subida).
+        # 1) Estado del run de ingesta (el que disparo la app, o el ultimo posterior a la subida).
         if job_id and not job_ok:
             try:
-                runs = list(w.jobs.list_runs(job_id=job_id, limit=1))
-                r = runs[0] if runs else None
-                if r and r.start_time and r.start_time >= t_upload_ms and r.state:
+                if run_id is not None:
+                    r = w.jobs.get_run(run_id=run_id)
+                else:
+                    runs = list(w.jobs.list_runs(job_id=job_id, limit=1))
+                    r = runs[0] if runs else None
+                    if r and not (r.start_time and r.start_time >= t_upload_ms):
+                        r = None
+                if r and r.state:
                     lcs = r.state.life_cycle_state.value if r.state.life_cycle_state else ""
                     rs = r.state.result_state.value if r.state.result_state else ""
                     if lcs in ("PENDING", "RUNNING", "QUEUED"):
@@ -592,9 +601,20 @@ elif PAGE == "upload":
         except Exception as e:
             st.error(f"Error subiendo el archivo: {e}")
             st.stop()
-        st.success(f"Subido a {dest}.")
-        # Barra de progreso hasta que el documento quede consultable.
-        seguir_ingesta(up.name, t_upload_ms)
+        # Dispara la ingesta explicitamente (no se usa trigger por llegada de archivo). Auto Loader
+        # procesa solo los PDFs nuevos (checkpoint), detecta la sigla (IA si es sujeto nuevo) e indexa.
+        _run_id = None
+        try:
+            _jid = resolve_ingest_job_id()
+            if _jid:
+                _run_id = w.jobs.run_now(job_id=_jid).run_id
+        except Exception as e:
+            st.warning(f"No se pudo iniciar la ingesta automaticamente ({e}). "
+                       "Puedes ejecutar el job 'ingest' en Workflows.")
+            st.stop()
+        st.success(f"Subido a {dest}. Ingesta iniciada.")
+        # Barra de progreso hasta que el documento quede consultable (sigue el run disparado).
+        seguir_ingesta(up.name, t_upload_ms, run_id=_run_id)
 
     # --- Estado del repositorio (bajo demanda) ---
     with st.expander("📊 Estado del repositorio de documentos"):

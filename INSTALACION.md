@@ -323,20 +323,24 @@ con **"Can use"**. Esos usuarios podrán abrir la URL de la app.
 
 ---
 
-## 11.5 Actualizar el repo ya clonado
+## 11.5 Actualizar el repo ya clonado (un solo comando)
 
-Como editaste `databricks.yml`, un `git pull` directo dará
-`Your local changes ... would be overwritten`. Guarda tus ediciones, actualiza y reaplícalas:
+Para traer los últimos cambios **y** redesplegar, ejecuta:
 
 ```bash
-git stash push -m "mis-edits" databricks.yml
-git pull --ff-only
-git stash pop
+./update.sh <perfil-cli> [target]
+# ej:  ./update.sh DEFAULT dev
 ```
 
-Si `git stash pop` reporta conflicto en `databricks.yml`, abre el archivo, deja **tus** valores
-(host/catalog/schema/warehouse_id y tu `governed_llm_endpoints`), borra las marcas `<<<<<<<`,
-`=======`, `>>>>>>>`, y vuelve a correr `./deploy.sh <perfil>`.
+`update.sh` descarta `app/app.yaml` (es un archivo **generado** por `deploy.sh`, no tu config),
+preserva tus ediciones de `databricks.yml` (host/catalog/schema/warehouse_id…), hace `git pull` y
+vuelve a correr `./deploy.sh` (idempotente). Tu configuración no se pierde.
+
+> En Windows usa **Git Bash**: `bash update.sh DEFAULT dev`.
+
+Si prefieres hacerlo a mano: `git restore app/app.yaml && git pull --ff-only && ./deploy.sh <perfil>`.
+Si `git pull` reporta conflicto en `databricks.yml`, deja **tus** valores, borra las marcas
+`<<<<<<< ======= >>>>>>>` y corre `./deploy.sh <perfil>`.
 
 ---
 

@@ -178,7 +178,7 @@ def seguir_ingesta(fname, t_upload_ms, run_id=None):
         # job de ingesta lo RECREA automaticamente: avisamos que se esta reindexando (no es un cuelgue).
         _m = (msg or "").lower()
         if "latest pipeline update failed" in _m:
-            prog.progress(75, text="Reconstruyendo el indice (recuperacion automatica); puede tardar unos minutos...")
+            prog.progress(75, text="El indice requiere mantenimiento; avisa al administrador...")
         elif "syncing initial data" in _m or "index creation" in _m:
             prog.progress(80, text="Reindexando el repositorio (generando embeddings)...")
         if rows is not None and rows0 is not None and rows > rows0 and ready in (True, None):
@@ -194,9 +194,10 @@ def seguir_ingesta(fname, t_upload_ms, run_id=None):
     prog.progress(90, text="Sigue procesando...")
     _r, _rows, _msg = _index_status()
     if "latest pipeline update failed" in (_msg or "").lower():
-        st.warning("El indice se esta **reconstruyendo automaticamente** (la sincronizacion previa "
-                   "habia caducado por retencion). Esto puede tardar varios minutos; el documento "
-                   "quedara consultable al terminar. Revisa el estado abajo en un momento.")
+        st.warning("La sincronizacion del indice de busqueda esta **fallando** (posible historial de "
+                   "la tabla fuente fuera de retencion). El documento no quedara consultable hasta "
+                   "que un administrador recupere el indice (recrearlo y redesplegar el agente). "
+                   "Avisa al equipo tecnico.")
     else:
         st.info("El documento sigue indexandose (puede tardar unos minutos mas). Puedes seguir usando "
                 "la app; quedara disponible en breve. Revisa el estado abajo.")

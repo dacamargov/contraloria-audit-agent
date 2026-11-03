@@ -284,6 +284,41 @@ app acceso a los Volumes. **Al final imprime la URL de la app.**
 
 ---
 
+## 8.1 ¿Qué son `<perfil-cli>` y `[target]`?
+
+Los scripts `deploy.sh` y `update.sh` reciben dos argumentos: `./deploy.sh <perfil-cli> [target]`.
+
+**`<perfil-cli>` — perfil de autenticación de la CLI (obligatorio).**
+Es el **nombre** del perfil con el que la CLI de Databricks se conecta al workspace (guarda el `host`
+y las credenciales OAuth/token). Vive en `~/.databrickscfg` y lo creas en el **paso 3** con:
+
+```bash
+databricks auth login --host https://<WORKSPACE-DEL-CLIENTE> --profile cliente
+databricks auth profiles        # lista tus perfiles; aqui debe aparecer 'cliente'
+```
+
+En esta guía el perfil se llama `cliente`, por eso los comandos usan `./deploy.sh cliente`. Si lo
+nombraste distinto, usa ese nombre. Cada quien usa el perfil que apunta a **su** workspace.
+
+**`[target]` — entorno del bundle (opcional; por defecto `dev`).**
+Es el entorno destino definido en `databricks.yml` bajo `targets:`. Selecciona qué configuración se
+despliega (host, `mode`, etc.). Este proyecto trae un solo target, `dev`:
+
+```yaml
+targets:
+  dev:
+    mode: development
+    workspace:
+      host: https://<WORKSPACE-DEL-CLIENTE>
+```
+
+Como el valor por defecto ya es `dev`, puedes **omitirlo**: `./deploy.sh cliente` equivale a
+`./deploy.sh cliente dev`.
+
+> Resumen: `./deploy.sh cliente` → "despliega al workspace del perfil `cliente`, usando el entorno `dev`".
+
+---
+
 ## 9. Verificar que todo quedó bien
 
 ```bash
@@ -341,6 +376,22 @@ vuelve a correr `./deploy.sh` (idempotente). Tu configuración no se pierde.
 Si prefieres hacerlo a mano: `git restore app/app.yaml && git pull --ff-only && ./deploy.sh <perfil>`.
 Si `git pull` reporta conflicto en `databricks.yml`, deja **tus** valores, borra las marcas
 `<<<<<<< ======= >>>>>>>` y corre `./deploy.sh <perfil>`.
+
+### Primera actualización desde una versión antigua (que aún no tiene `update.sh`)
+
+Si tu copia instalada es **anterior** a que existiera `update.sh`, ese script todavía no está en tu
+carpeta, así que esta **primera** vez hazlo con este comando (preserva tu `databricks.yml`, descarta
+el `app/app.yaml` generado, actualiza y redespliega):
+
+```bash
+git restore app/app.yaml && \
+git stash push -m cfg -- databricks.yml && \
+git pull --ff-only && \
+git stash pop && \
+./deploy.sh <perfil-cli> [target]
+```
+
+De aquí en adelante, las próximas actualizaciones ya son simplemente `./update.sh <perfil-cli> [target]`.
 
 ---
 

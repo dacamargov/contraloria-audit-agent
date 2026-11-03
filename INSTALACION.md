@@ -364,6 +364,44 @@ con **"Can use"**. Esos usuarios podrán abrir la URL de la app.
 
 ---
 
+## 11.4 Observabilidad: trazas de las consultas (tabla en tu schema)
+
+El agente despliega con **inference table** activada automáticamente (`databricks-agents`): **cada**
+consulta al agente (pregunta + respuesta, con la traza embebida) se registra en una tabla Delta en
+**tu** catálogo/schema, gobernada por Unity Catalog y consultable con SQL. No requiere configuración.
+
+La tabla se llama `{catalog}.{schema}.{nombre_modelo_agente}_payload`; en el despliegue por defecto:
+
+```
+<catalog>.<schema>.contraloria_audit_agent_payload
+```
+
+Verla en la UI: **Catalog → tu catálogo → tu schema → `contraloria_audit_agent_payload`**. O por SQL:
+
+```sql
+-- Últimas consultas al agente (pregunta, respuesta, estado, latencia, quién)
+SELECT request_time,
+       status_code,
+       execution_duration_ms,
+       requester,
+       get_json_object(request,  '$.input[0].content')      AS pregunta,
+       get_json_object(response, '$.output[0].content[0].text') AS respuesta
+FROM <catalog>.<schema>.contraloria_audit_agent_payload
+ORDER BY request_time DESC
+LIMIT 50;
+```
+
+Columnas útiles: `request_time`, `status_code`, `execution_duration_ms`, `requester`, `request`,
+`response`, `databricks_request_id`, `served_entity_id`. Captura el **100%** (sin muestreo) y se
+actualiza en pocos minutos tras cada consulta. Sobre esta tabla puedes montar un dashboard AI/BI de
+uso, latencia y errores.
+
+> La vista visual de trazas (árbol de *spans*) de MLflow vive en el experimento del agente
+> (**Machine Learning → Experiments**); la **tabla** de arriba es la fuente gobernada y persistente
+> recomendada para auditoría y análisis.
+
+---
+
 ## 11.5 Actualizar el repo ya clonado (un solo comando)
 
 Para traer los últimos cambios **y** redesplegar, ejecuta:

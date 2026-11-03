@@ -274,11 +274,74 @@ elif _still_null:
     print("Deteccion IA desactivada (classify_llm_endpoint vacio); documentos sin sigla:", _still_null)
 
 # COMMAND ----------
-# Sincroniza el indice de Vector Search (via databricks-sdk, sin conflictos de deps)
+# Sincroniza el indice de Vector Search (via databricks-sdk, sin conflictos de deps).
+#
+# Robustez ante VECTOR_SEARCH_SOURCE_HISTORY_OUT_OF_RETENTION: un indice DELTA_SYNC TRIGGERED
+# depende del historial (CDF / time-travel) de la tabla fuente para sincronizar de forma
+# incremental. Si entre dos sincronizaciones pasa mas tiempo que la retencion de la tabla (o los
+# MERGE de reclasificacion reescriben archivos que luego se limpian), el historial caduca y TODA
+# sync falla; el documento recien ingerido queda en la tabla pero NUNCA entra al indice.
+#
+# Mitigacion en dos frentes:
+#   (1) Prevenir: fijar retencion amplia en la tabla fuente (idempotente).
+#   (2) Auto-sanar: si el indice quedo en estado fallido por una sync previa, RECREARLO
+#       (resync completo) ANTES de disparar la nueva sync. Recrear preserva la spec existente.
 from databricks.sdk import WorkspaceClient
+import time as _t
+
+# Columnas a sincronizar en el indice (debe coincidir con setup.py). Necesarias para recrear.
+_INDEX_COLS = ["chunk_id", "documento", "sigla", "sujeto", "sector", "delegada",
+               "tipo_auditoria", "vigencia", "pagina", "chunk_index", "texto"]
+
+# (1) Retencion amplia en la tabla fuente (idempotente): evita que el historial caduque.
 try:
-    WorkspaceClient().vector_search_indexes.sync_index(INDEX_NAME)
-    print("Sync del indice disparado")
+    spark.sql(f"""ALTER TABLE {CHUNKS_TBL} SET TBLPROPERTIES (
+      delta.enableChangeDataFeed = true,
+      delta.logRetentionDuration = 'interval 90 days',
+      delta.deletedFileRetentionDuration = 'interval 90 days')""")
+except Exception as e:
+    print("Aviso al fijar retencion de la tabla fuente:", e)
+
+_w = WorkspaceClient()
+
+
+def _indice_en_estado_fallido():
+    """True si el ultimo update del indice fallo (p.ej. historial fuera de retencion)."""
+    try:
+        s = _w.vector_search_indexes.get_index(INDEX_NAME).status
+        return "latest pipeline update failed" in (getattr(s, "message", "") or "").lower()
+    except Exception:
+        return False
+
+
+def _recrear_indice():
+    """Recrea el indice preservando su spec (unico modo de recuperar de historial caducado)."""
+    from databricks.sdk.service.vectorsearch import (
+        VectorIndexType, DeltaSyncVectorIndexSpecRequest, EmbeddingSourceColumn, PipelineType)
+    idx = _w.vector_search_indexes.get_index(INDEX_NAME)
+    spec = idx.delta_sync_index_spec
+    esc = [EmbeddingSourceColumn(name=c.name,
+                                 embedding_model_endpoint_name=c.embedding_model_endpoint_name)
+           for c in (spec.embedding_source_columns or [])]
+    print("Indice en estado fallido (historial caducado): recreando para resync completo...")
+    _w.vector_search_indexes.delete_index(INDEX_NAME)
+    _t.sleep(5)
+    _w.vector_search_indexes.create_index(
+        name=INDEX_NAME, endpoint_name=idx.endpoint_name, primary_key=idx.primary_key,
+        index_type=VectorIndexType.DELTA_SYNC,
+        delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+            source_table=spec.source_table, pipeline_type=PipelineType.TRIGGERED,
+            embedding_source_columns=esc, columns_to_sync=_INDEX_COLS))
+    print("Indice recreado; sync inicial (completo) en curso.")
+
+
+# (2) Auto-sana el caso ya roto y luego dispara la sync incremental del documento nuevo.
+try:
+    if _indice_en_estado_fallido():
+        _recrear_indice()  # recrea (incluye sync inicial completo); no hace falta sync_index aparte
+    else:
+        _w.vector_search_indexes.sync_index(INDEX_NAME)
+        print("Sync del indice disparado")
 except Exception as e:
     print("Aviso al sincronizar:", e)
 

@@ -147,7 +147,7 @@ def seguir_ingesta(fname, t_upload_ms, run_id=None):
     prog = st.progress(10, text="Subido al Volume. Iniciando la ingesta...")
     job_id = resolve_ingest_job_id()
     job_ok = False
-    t_end = time.time() + 480  # hasta 8 min (ingesta + sync del indice)
+    t_end = time.time() + 600  # hasta 10 min (ingesta + sync; incluye margen para reindexado)
     while time.time() < t_end:
         # 1) Estado del run de ingesta (el que disparo la app, o el ultimo posterior a la subida).
         if job_id and not job_ok:
@@ -173,7 +173,14 @@ def seguir_ingesta(fname, t_upload_ms, run_id=None):
             except Exception:
                 pass
         # 2) Senal de completado: el indice refleja el nuevo documento (crece el conteo).
-        ready, rows, _ = _index_status()
+        ready, rows, msg = _index_status()
+        # Si una sync previa dejo el indice en estado fallido (historial fuera de retencion), el
+        # job de ingesta lo RECREA automaticamente: avisamos que se esta reindexando (no es un cuelgue).
+        _m = (msg or "").lower()
+        if "latest pipeline update failed" in _m:
+            prog.progress(75, text="Reconstruyendo el indice (recuperacion automatica); puede tardar unos minutos...")
+        elif "syncing initial data" in _m or "index creation" in _m:
+            prog.progress(80, text="Reindexando el repositorio (generando embeddings)...")
         if rows is not None and rows0 is not None and rows > rows0 and ready in (True, None):
             prog.progress(100, text="✅ Listo para consultar en el Chat y los informes")
             st.balloons()
@@ -185,8 +192,14 @@ def seguir_ingesta(fname, t_upload_ms, run_id=None):
             return
         time.sleep(6)
     prog.progress(90, text="Sigue procesando...")
-    st.info("El documento sigue procesando (puede tardar unos minutos mas). Puedes seguir usando "
-            "la app; quedara disponible en breve. Revisa el estado abajo.")
+    _r, _rows, _msg = _index_status()
+    if "latest pipeline update failed" in (_msg or "").lower():
+        st.warning("El indice se esta **reconstruyendo automaticamente** (la sincronizacion previa "
+                   "habia caducado por retencion). Esto puede tardar varios minutos; el documento "
+                   "quedara consultable al terminar. Revisa el estado abajo en un momento.")
+    else:
+        st.info("El documento sigue indexandose (puede tardar unos minutos mas). Puedes seguir usando "
+                "la app; quedara disponible en breve. Revisa el estado abajo.")
 
 
 st.set_page_config(page_title="Contraloria · Asistente de Auditoria", page_icon="🏛️", layout="wide")

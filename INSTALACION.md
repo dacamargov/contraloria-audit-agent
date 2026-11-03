@@ -37,13 +37,19 @@ curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.s
 (En macOS también: `brew tap databricks/tap && brew install databricks`.)
 
 ### Windows (recomendado: Git Bash)
-`deploy.sh` es un script **bash**, así que en Windows corre dentro de **Git Bash** (viene con
-[Git for Windows](https://git-scm.com/download/win)) o **WSL**. Dentro de Git Bash, instala el CLI
-igual que en Linux:
+`deploy.sh` y `update.sh` son scripts **bash**, así que en Windows se corren dentro de **Git Bash**
+(viene con [Git for Windows](https://git-scm.com/download/win)) o **WSL** — **no** en PowerShell/CMD.
+Dentro de Git Bash, instala el CLI igual que en Linux:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
 ```
 (Alternativa en PowerShell: `winget install Databricks.DatabricksCLI`.)
+
+> **En Windows invoca siempre los scripts con `bash`** (el bit de ejecución puede no conservarse al
+> clonar en Windows): `bash deploy.sh cliente dev` y `bash update.sh cliente dev`.
+>
+> **Finales de línea:** el repo incluye un `.gitattributes` que fuerza `LF`, así que los scripts
+> funcionan en Git Bash aunque tu Git tenga `core.autocrlf=true`. No necesitas configurar nada.
 
 ### Verificar
 ```bash
@@ -391,7 +397,10 @@ git stash pop && \
 ./deploy.sh <perfil-cli> [target]
 ```
 
-De aquí en adelante, las próximas actualizaciones ya son simplemente `./update.sh <perfil-cli> [target]`.
+> En **Windows (Git Bash)**, la última línea es `bash deploy.sh <perfil-cli> [target]`.
+
+De aquí en adelante, las próximas actualizaciones ya son simplemente `./update.sh <perfil-cli> [target]`
+(en Windows: `bash update.sh <perfil-cli> [target]`).
 
 ---
 

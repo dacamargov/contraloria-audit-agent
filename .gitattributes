@@ -1,0 +1,23 @@
+# Normalizacion de finales de linea.
+#
+# IMPORTANTE para Windows: el despliegue se corre con scripts bash (deploy.sh / update.sh) en
+# Git Bash. Si el repo se clona en Windows con core.autocrlf=true (lo habitual), los .sh se
+# convierten a CRLF y Git Bash falla con errores tipo:  $'\r': command not found.
+# Forzando eol=lf, el working tree SIEMPRE usa LF (en cualquier SO) y los scripts funcionan.
+
+# Todos los archivos de texto se normalizan a LF en el working tree.
+* text=auto eol=lf
+
+# Explicito para los artefactos del despliegue (criticos para Windows/Git Bash).
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+
+# Binarios: no tocar nunca (evita corrupcion de imagenes/PDF).
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary

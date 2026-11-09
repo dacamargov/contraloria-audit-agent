@@ -110,6 +110,13 @@ grant catalog "$CATALOG"                         "USE_CATALOG"
 grant schema  "$CATALOG.$SCHEMA"                 "USE_SCHEMA"
 grant volume  "$CATALOG.$SCHEMA.$VOL_INF"        "READ_VOLUME,WRITE_VOLUME"
 grant volume  "$CATALOG.$SCHEMA.$VOL_ANA"        "READ_VOLUME,WRITE_VOLUME"
+# SELECT sobre el indice de Vector Search y la tabla de chunks: la app (como su SP) consulta el
+# indice para (a) detectar informes ya indexados (duplicados) y (b) mostrar el progreso/bombitas
+# tras subir un PDF. Sin esto, la app no puede leer el indice ("no se pudo verificar si ya estaba
+# indexado") y la subida termina en "Ingesta completada" sin confirmar el indexado. El chat/informes
+# NO dependen de esto (van por el endpoint del agente), solo las lecturas directas del indice.
+grant table   "$CATALOG.$SCHEMA.doc_chunks"       "SELECT"
+grant table   "$CATALOG.$SCHEMA.doc_chunks_index" "SELECT"
 echo "    grants de Unity Catalog aplicados al SP $APP_SP"
 
 # CAN_QUERY al SP de la app sobre el endpoint del agente. Va aqui (y no como recurso del bundle)

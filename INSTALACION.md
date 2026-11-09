@@ -442,6 +442,27 @@ De aquí en adelante, las próximas actualizaciones ya son simplemente `./update
 
 ---
 
+## 11.6 Verificar que quedó en la última versión (sin entrar a la UI)
+
+Después de un `deploy.sh`/`update.sh`, confirma el estado con:
+
+```bash
+bash verificar.sh <perfil-cli> [target]
+# ej:  bash verificar.sh admin dev
+```
+
+Muestra el estado de la **app** (RUNNING/ACTIVE, id y fecha del deployment, URL) y del **agente**
+(ready, `config_update`, versión servida). Está **OK** si: `estado app = RUNNING`,
+`estado compute = ACTIVE`, `ready = READY`, `config_update = NOT_UPDATING` y la fecha de
+`actualizado` es de hoy. Luego abre la URL para una prueba real (la primera consulta puede tardar
+unos minutos si el agente estaba apagado → arranque en frío).
+
+> El nombre del `[target]` debe existir en `databricks.yml` (sección `targets:`). El repo trae el
+> target **`dev`**; el target **no** elige el workspace (eso lo define `workspace.host`). Si quieres
+> un target llamado distinto (p. ej. `prd`), agrégalo en `databricks.yml` apuntando a tu host.
+
+---
+
 ## 11.6 Alternativa: desplegar desde el Workspace (sin terminal local)
 
 Si no quieres instalar el CLI en tu máquina, usa el notebook
